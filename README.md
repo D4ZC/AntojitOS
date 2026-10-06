@@ -4,7 +4,8 @@ Punto de venta web local-first para restaurantes. La operación de la sucursal s
 
 ## Estado
 
-Fase 0: definición funcional y prototipo táctil para dos terminales Windows.
+- Fase 0: prototipo táctil para dos terminales Windows.
+- Fase 1: API local, PostgreSQL, sesiones, permisos, auditoría, idempotencia, outbox y eventos en tiempo real.
 
 ## Requisitos de desarrollo
 
@@ -19,6 +20,8 @@ pnpm dev
 ```
 
 El prototipo queda disponible en `http://localhost:5173`.
+
+Para levantar también la API se necesita PostgreSQL. La preparación completa está documentada en [`docs/phase-1/EJECUCION_LOCAL.md`](docs/phase-1/EJECUCION_LOCAL.md). Sus endpoints quedan en `http://localhost:3000/api` y OpenAPI en `http://localhost:3000/api/docs`.
 
 ## Validación
 
@@ -37,6 +40,7 @@ pnpm test:offline
 ## Estructura
 
 - `apps/pos`: prototipo PWA táctil del punto de venta.
+- `apps/api`: API autoritativa local y migraciones PostgreSQL.
 - `packages/domain`: reglas de dominio independientes de la interfaz.
 - `docs/phase-0`: alcance, flujos, estados y permisos iniciales.
 - `docs/architecture`: decisiones de arquitectura.

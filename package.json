@@ -8,10 +8,12 @@
     "pnpm": ">=10"
   },
   "scripts": {
-    "build": "pnpm --filter @antojit-os/domain build && pnpm --filter @antojit-os/pos build",
-    "check": "pnpm --filter @antojit-os/domain check && pnpm --filter @antojit-os/pos check",
-    "dev": "pnpm --filter @antojit-os/pos dev",
-    "test": "pnpm --filter @antojit-os/domain test && pnpm --filter @antojit-os/pos test",
+    "build": "pnpm --filter @antojit-os/domain build && pnpm --filter @antojit-os/api build && pnpm --filter @antojit-os/pos build",
+    "check": "pnpm --filter @antojit-os/domain check && pnpm --filter @antojit-os/api check && pnpm --filter @antojit-os/pos check",
+    "dev": "pnpm --parallel --filter @antojit-os/api --filter @antojit-os/pos dev",
+    "dev:api": "pnpm --filter @antojit-os/api dev",
+    "dev:pos": "pnpm --filter @antojit-os/pos dev",
+    "test": "pnpm --filter @antojit-os/domain test && pnpm --filter @antojit-os/api test && pnpm --filter @antojit-os/pos test",
     "test:offline": "node --test packages/domain/tests/order.node.test.mjs"
   }
 }
