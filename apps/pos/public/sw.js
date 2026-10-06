@@ -1,4 +1,4 @@
-const CACHE_NAME = "antojit-os-shell-v1";
+const CACHE_NAME = "antojit-os-shell-v2";
 const APP_SHELL = [
   "/",
   "/manifest.webmanifest",
@@ -25,6 +25,16 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
+
+  const requestUrl = new URL(event.request.url);
+  if (
+    requestUrl.origin === self.location.origin &&
+    (requestUrl.pathname.startsWith("/api/") ||
+      requestUrl.pathname.startsWith("/socket.io/"))
+  ) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
 
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {

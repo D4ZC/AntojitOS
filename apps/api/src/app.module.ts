@@ -1,11 +1,13 @@
 import { Module } from "@nestjs/common";
 import { APP_GUARD } from "@nestjs/core";
 import { ScheduleModule } from "@nestjs/schedule";
+import { AccountsModule } from "./accounts/accounts.module.js";
 import { AuthGuard } from "./auth/auth.guard.js";
 import { AuthModule } from "./auth/auth.module.js";
 import { PermissionsGuard } from "./auth/permissions.guard.js";
 import { ConfigModule } from "./config/config.module.js";
 import { DatabaseModule } from "./database/database.module.js";
+import { CatalogModule } from "./catalog/catalog.module.js";
 import { EventsModule } from "./events/events.module.js";
 import { HealthModule } from "./health/health.module.js";
 import { TerminalsModule } from "./terminals/terminals.module.js";
@@ -16,6 +18,8 @@ import { TerminalsModule } from "./terminals/terminals.module.js";
     DatabaseModule,
     ScheduleModule.forRoot(),
     AuthModule,
+    CatalogModule,
+    AccountsModule,
     EventsModule,
     HealthModule,
     TerminalsModule,
@@ -26,4 +30,3 @@ import { TerminalsModule } from "./terminals/terminals.module.js";
   ],
 })
 export class AppModule {}
-

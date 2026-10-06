@@ -1,0 +1,192 @@
+import { ConflictException } from "@nestjs/common";
+import { afterEach, describe, expect, it } from "vitest";
+import { AccountsService } from "../src/accounts/accounts.service.js";
+import { AuditService } from "../src/audit/audit.service.js";
+import { CatalogService } from "../src/catalog/catalog.service.js";
+import { IdempotencyService } from "../src/idempotency/idempotency.service.js";
+import { OutboxService } from "../src/outbox/outbox.service.js";
+import type { AuthContext } from "../src/security/auth-context.js";
+import {
+  createServiceFixture,
+  fixtureIds,
+} from "./service-fixture.js";
+import type { TestDatabase } from "./test-database.js";
+
+const actor = (terminalId: string): AuthContext => ({
+  sessionId: crypto.randomUUID(),
+  siteId: fixtureIds.site,
+  userId: fixtureIds.user,
+  terminalId,
+  displayName: "Administrador",
+  permissions: [
+    "catalog.read",
+    "service.account.open",
+    "service.account.read",
+    "service.item.add",
+    "service.item.edit",
+    "service.round.send",
+  ],
+});
+
+const createAccountsService = (database: TestDatabase): AccountsService =>
+  new AccountsService(
+    database,
+    new AuditService(),
+    new IdempotencyService(database),
+    new OutboxService(),
+  );
+
+let database: TestDatabase | undefined;
+
+afterEach(async () => {
+  await database?.close();
+  database = undefined;
+});
+
+describe("cuentas y captura concurrente", () => {
+  it("abre una sola cuenta por mesa y actualiza el plano", async () => {
+    database = await createServiceFixture();
+    const accounts = createAccountsService(database);
+    const catalog = new CatalogService(database);
+    const terminal = actor(fixtureIds.terminalOne);
+    const input = {
+      serviceType: "table" as const,
+      tableId: fixtureIds.table,
+      guestCount: 2,
+    };
+
+    const opened = await accounts.open(input, "open-table-1", terminal);
+    const replay = await accounts.open(input, "open-table-1", terminal);
+
+    expect(opened.body.version).toBe(0);
+    expect(opened.replayed).toBe(false);
+    expect(replay.body).toEqual(opened.body);
+    expect(replay.replayed).toBe(true);
+
+    await expect(
+      accounts.open(input, "open-table-again", terminal),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const layout = await catalog.serviceLayout(fixtureIds.site);
+    expect(layout.areas[0]?.tables[0]).toMatchObject({
+      id: fixtureIds.table,
+      state: "occupied",
+      accountId: opened.body.id,
+      accountVersion: 0,
+    });
+    const productCatalog = await catalog.catalog(fixtureIds.site);
+    expect(productCatalog.categories[0]?.products[0]).toMatchObject({
+      id: fixtureIds.product,
+      priceInCents: 1000,
+      modifierGroups: [
+        expect.objectContaining({
+          id: fixtureIds.modifierGroup,
+          options: [expect.objectContaining({ id: fixtureIds.modifier })],
+        }),
+      ],
+    });
+  });
+
+  it("rechaza una versión obsoleta y envía exactamente una ronda", async () => {
+    database = await createServiceFixture();
+    const accounts = createAccountsService(database);
+    const firstTerminal = actor(fixtureIds.terminalOne);
+    const secondTerminal = actor(fixtureIds.terminalTwo);
+    const opened = await accounts.open(
+      { serviceType: "quick", guestCount: 1, reference: "Mostrador 12" },
+      "open-quick-12",
+      firstTerminal,
+    );
+    const accountId = opened.body.id;
+
+    const firstItem = await accounts.addItem(
+      accountId,
+      {
+        productId: fixtureIds.product,
+        quantity: 1,
+        expectedVersion: 0,
+        modifierIds: [fixtureIds.modifier],
+      },
+      "add-first",
+      firstTerminal,
+    );
+    expect(firstItem.body.accountVersion).toBe(1);
+
+    await expect(
+      accounts.addItem(
+        accountId,
+        {
+          productId: fixtureIds.product,
+          quantity: 1,
+          expectedVersion: 0,
+        },
+        "stale-second-terminal",
+        secondTerminal,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const secondItem = await accounts.addItem(
+      accountId,
+      {
+        productId: fixtureIds.product,
+        quantity: 2,
+        expectedVersion: 1,
+      },
+      "add-second",
+      secondTerminal,
+    );
+    expect(secondItem.body.accountVersion).toBe(2);
+
+    const sent = await accounts.sendRound(
+      accountId,
+      { expectedVersion: 2 },
+      "send-round-one",
+      firstTerminal,
+    );
+    const replay = await accounts.sendRound(
+      accountId,
+      { expectedVersion: 2 },
+      "send-round-one",
+      secondTerminal,
+    );
+
+    expect(sent.body.sequence).toBe(1);
+    expect(sent.body.items).toHaveLength(2);
+    expect(sent.body.accountVersion).toBe(3);
+    expect(replay.body).toEqual(sent.body);
+    expect(replay.replayed).toBe(true);
+
+    const account = await accounts.get(accountId, firstTerminal);
+    expect(account.version).toBe(3);
+    expect(account.totalInCents).toBe(3200);
+    expect(account.items.map((item) => item.preparationState)).toEqual([
+      "sent",
+      "sent",
+    ]);
+
+    await expect(
+      accounts.updateItem(
+        accountId,
+        firstItem.body.item.id,
+        { quantity: 3, expectedVersion: 3 },
+        "edit-after-send",
+        firstTerminal,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const rounds = await database.query<{ count: string }>(
+      "SELECT count(*)::text AS count FROM order_rounds",
+    );
+    const events = await database.query<{ event_type: string }>(
+      "SELECT event_type FROM outbox_events ORDER BY created_at, id",
+    );
+    expect(rounds.rows[0]?.count).toBe("1");
+    expect(events.rows.map((event) => event.event_type)).toEqual([
+      "account.opened",
+      "account.updated",
+      "account.updated",
+      "order.round.submitted",
+    ]);
+  });
+});
+

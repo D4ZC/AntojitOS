@@ -27,8 +27,13 @@ describe("migraciones de fundación", () => {
       expect.arrayContaining([
         "app_users",
         "audit_events",
+        "dining_areas",
         "idempotency_records",
+        "order_items",
+        "order_rounds",
         "outbox_events",
+        "products",
+        "service_accounts",
         "sites",
         "terminals",
         "user_sessions",
@@ -37,7 +42,6 @@ describe("migraciones de fundación", () => {
     const applied = await database.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM schema_migrations",
     );
-    expect(applied.rows[0]?.count).toBe("1");
+    expect(applied.rows[0]?.count).toBe("2");
   });
 });
-
