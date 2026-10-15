@@ -18,7 +18,15 @@ const terminal: TerminalCredentials = {
 const session: Session = {
   accessToken: "access-token",
   expiresAt: "2030-01-01T00:00:00.000Z",
-  user: { id: "user-1", displayName: "Administrador", permissions: [] },
+  user: {
+    id: "user-1",
+    displayName: "Administrador",
+    permissions: [
+      "service.account.manage",
+      "service.account.discount",
+      "service.precheck.create",
+    ],
+  },
 };
 
 const catalog: CatalogCategory[] = [{
@@ -52,6 +60,7 @@ const layout: ServiceLayout = {
       state: "free",
       accountId: null,
       accountVersion: null,
+      accountCount: 0,
     }],
   }],
 };
@@ -65,7 +74,19 @@ const emptyAccount: ServiceAccount = {
   reference: null,
   guestCount: 2,
   version: 0,
+  accountGroupId: "group-1",
+  isPrimary: true,
+  responsible: { id: "user-1", displayName: "Administrador" },
   items: [],
+  adjustments: [],
+  totals: {
+    itemTotalInCents: 0,
+    subtotalInCents: 0,
+    adjustmentTotalInCents: 0,
+    discountInCents: 0,
+    taxInCents: 0,
+    totalInCents: 0,
+  },
   totalInCents: 0,
 };
 
@@ -82,8 +103,18 @@ const pendingAccount: ServiceAccount = {
     note: null,
     preparationState: "pending",
     modifiers: [],
+    adjustmentInCents: 0,
+    taxInCents: 579,
     lineTotalInCents: 4200,
   }],
+  totals: {
+    itemTotalInCents: 4200,
+    subtotalInCents: 3621,
+    adjustmentTotalInCents: 0,
+    discountInCents: 0,
+    taxInCents: 579,
+    totalInCents: 4200,
+  },
   totalInCents: 4200,
 };
 
@@ -101,6 +132,29 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   serviceLayout: vi.fn().mockResolvedValue(layout),
   openAccount: vi.fn().mockResolvedValue({ id: "account-1" }),
   account: vi.fn().mockResolvedValue(emptyAccount),
+  tableAccounts: vi.fn().mockResolvedValue([]),
+  accountManagementOptions: vi.fn().mockResolvedValue({
+    users: [{ id: "user-1", displayName: "Administrador" }],
+    tables: [{ id: "table-1", name: "Mesa 1" }],
+    accounts: [],
+  }),
+  createPrecheck: vi.fn().mockResolvedValue({
+    id: "precheck-1",
+    sequence: 1,
+    generatedAt: "2030-01-01T12:00:00.000Z",
+    account: pendingAccount,
+  }),
+  applyAccountAdjustment: vi.fn().mockResolvedValue({ accountVersion: 2 }),
+  voidAccountAdjustment: vi.fn().mockResolvedValue({ accountVersion: 2 }),
+  updateAccountContext: vi.fn().mockResolvedValue({ accountVersion: 2 }),
+  splitAccount: vi.fn().mockResolvedValue({
+    sourceVersion: 2,
+    destinationAccountId: "account-2",
+    destinationVersion: 1,
+  }),
+  transferAccountItems: vi.fn().mockResolvedValue({ sourceVersion: 2, destinationVersion: 2 }),
+  mergeAccount: vi.fn().mockResolvedValue({ destinationAccountId: "account-2", destinationVersion: 2 }),
+  cancelAccount: vi.fn().mockResolvedValue({ accountVersion: 1, status: "cancelled" }),
   addItem: vi.fn().mockResolvedValue({ accountVersion: 1 }),
   updateItem: vi.fn().mockResolvedValue({ accountVersion: 2 }),
   cancelItem: vi.fn().mockResolvedValue({ accountVersion: 2, state: "cancelled" }),
@@ -179,5 +233,87 @@ describe("POS conectado", () => {
       modifierIds: [],
     });
     expect(api.sendRound).toHaveBeenCalledWith("account-1", 1);
+  });
+
+  it("genera una precuenta táctil sin cerrar la cuenta", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(pendingAccount) });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "Precuenta" }));
+
+    expect(await screen.findByRole("heading", { name: "Precuenta #1" })).toBeInTheDocument();
+    expect(api.createPrecheck).toHaveBeenCalledWith("account-1", 1);
+    expect(screen.getByText("Documento informativo; todavía no representa un pago ni cierra la cuenta.")).toBeInTheDocument();
+  });
+
+  it("solicita motivo antes de aplicar un descuento", async () => {
+    storeTerminal();
+    const accountMock = vi.fn().mockResolvedValue(pendingAccount);
+    const api = createApi({ account: accountMock });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "Gestionar cuenta" }));
+    await screen.findByRole("heading", { name: "Gestionar cuenta" });
+    const apply = screen.getByRole("button", { name: "Aplicar descuento" });
+    expect(apply).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Motivo de la operación"), {
+      target: { value: "Cliente frecuente" },
+    });
+    fireEvent.click(apply);
+
+    await waitFor(() => expect(api.applyAccountAdjustment).toHaveBeenCalledWith(
+      "account-1",
+      {
+        kind: "discount",
+        calculation: "percentage",
+        value: 1000,
+        expectedVersion: 1,
+        reason: "Cliente frecuente",
+      },
+    ));
+  });
+
+  it("confirma la cancelación de una cuenta vacía y vuelve al mapa", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(emptyAccount) });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "Gestionar cuenta" }));
+    await screen.findByRole("heading", { name: "Gestionar cuenta" });
+    const cancel = screen.getByRole("button", { name: "Cancelar cuenta y liberar mesa" });
+    expect(cancel).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Motivo de la operación"), {
+      target: { value: "Mesa abierta por error" },
+    });
+    fireEvent.click(cancel);
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cancelación" }));
+
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0,
+      reason: "Mesa abierta por error",
+    }));
+    expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
+  });
+
+  it("ofrece un acceso rápido para liberar una mesa", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(emptyAccount) });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "Liberar mesa" }));
+    expect(await screen.findByRole("heading", { name: "Liberar Mesa 1" })).toBeInTheDocument();
+    const confirm = screen.getByRole("button", { name: "Confirmar y liberar" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Motivo para liberar la mesa"), {
+      target: { value: "Mesa abierta por error" },
+    });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0,
+      reason: "Mesa abierta por error",
+    }));
+    expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
   });
 });

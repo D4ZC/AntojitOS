@@ -5,11 +5,13 @@ import { TestDatabase } from "./test-database.js";
 export const fixtureIds = {
   site: "10000000-0000-4000-8000-000000000001",
   user: "10000000-0000-4000-8000-000000000002",
+  userTwo: "10000000-0000-4000-8000-000000000014",
   terminalOne: "10000000-0000-4000-8000-000000000003",
   terminalTwo: "10000000-0000-4000-8000-000000000004",
   productionCenter: "10000000-0000-4000-8000-000000000005",
   area: "10000000-0000-4000-8000-000000000006",
   table: "10000000-0000-4000-8000-000000000007",
+  tableTwo: "10000000-0000-4000-8000-000000000015",
   tax: "10000000-0000-4000-8000-000000000008",
   category: "10000000-0000-4000-8000-000000000009",
   product: "10000000-0000-4000-8000-000000000010",
@@ -29,8 +31,10 @@ export const createServiceFixture = async (): Promise<TestDatabase> => {
     );
     await transaction.query(
       `INSERT INTO app_users (id, site_id, employee_code, display_name)
-       VALUES ($1, $2, 'ADMIN', 'Administrador')`,
-      [fixtureIds.user, fixtureIds.site],
+       VALUES
+         ($1, $3, 'ADMIN', 'Administrador'),
+         ($2, $3, 'WAITER', 'Mesero dos')`,
+      [fixtureIds.user, fixtureIds.userTwo, fixtureIds.site],
     );
     await transaction.query(
       `INSERT INTO terminals (
@@ -58,9 +62,11 @@ export const createServiceFixture = async (): Promise<TestDatabase> => {
     );
     await transaction.query(
       `INSERT INTO service_tables (
-         id, site_id, dining_area_id, code, name, capacity
-       ) VALUES ($1, $2, $3, 'TABLE-1', 'Mesa 1', 4)`,
-      [fixtureIds.table, fixtureIds.site, fixtureIds.area],
+         id, site_id, dining_area_id, code, name, capacity, display_order
+       ) VALUES
+         ($1, $3, $4, 'TABLE-1', 'Mesa 1', 4, 1),
+         ($2, $3, $4, 'TABLE-2', 'Mesa 2', 4, 2)`,
+      [fixtureIds.table, fixtureIds.tableTwo, fixtureIds.site, fixtureIds.area],
     );
     await transaction.query(
       `INSERT INTO tax_rules (

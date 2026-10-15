@@ -53,6 +53,7 @@ interface AreaRow extends DatabaseRow {
   table_order: number;
   account_id: string | null;
   account_version: number | null;
+  account_count: number;
 }
 
 @Injectable()
@@ -180,14 +181,22 @@ export class CatalogService {
          tables.name AS table_name,
          tables.capacity,
          tables.display_order AS table_order,
-         accounts.id AS account_id,
-         accounts.version AS account_version
+         accounts.account_id,
+         accounts.account_version,
+         COALESCE(accounts.account_count, 0)::integer AS account_count
        FROM dining_areas areas
        JOIN service_tables tables
          ON tables.dining_area_id = areas.id AND tables.active
-       LEFT JOIN service_accounts accounts
-         ON accounts.table_id = tables.id
-        AND accounts.status IN ('open', 'awaiting_payment')
+       LEFT JOIN (
+         SELECT
+           table_id,
+           (array_agg(id ORDER BY is_primary DESC, opened_at, id))[1] AS account_id,
+           (array_agg(version ORDER BY is_primary DESC, opened_at, id))[1] AS account_version,
+           count(*)::integer AS account_count
+         FROM service_accounts
+         WHERE status IN ('open', 'awaiting_payment')
+         GROUP BY table_id
+       ) accounts ON accounts.table_id = tables.id
        WHERE areas.site_id = $1 AND areas.active
        ORDER BY areas.display_order, tables.display_order`,
       [siteId],
@@ -204,6 +213,7 @@ export class CatalogService {
         state: "free" | "occupied";
         accountId: string | null;
         accountVersion: number | null;
+        accountCount: number;
       }>;
     }>();
 
@@ -221,6 +231,7 @@ export class CatalogService {
         state: row.account_id ? "occupied" : "free",
         accountId: row.account_id,
         accountVersion: row.account_version,
+        accountCount: row.account_count,
       });
       areas.set(row.area_id, area);
     }
@@ -228,4 +239,3 @@ export class CatalogService {
     return { areas: [...areas.values()] };
   }
 }
-

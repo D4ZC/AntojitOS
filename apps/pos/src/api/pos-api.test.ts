@@ -99,4 +99,31 @@ describe("PosApi", () => {
     });
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("cancela una cuenta con motivo e idempotencia", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      accountVersion: 2,
+      status: "cancelled",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new PosApi("/api", "access-token", () => "cancel-key");
+
+    await api.cancelAccount("account-1", {
+      expectedVersion: 1,
+      reason: "Mesa abierta por error",
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/accounts/account-1/cancellations", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer access-token",
+        "content-type": "application/json",
+        "idempotency-key": "cancel-key",
+      },
+      body: JSON.stringify({
+        expectedVersion: 1,
+        reason: "Mesa abierta por error",
+      }),
+    });
+  });
 });

@@ -1,5 +1,9 @@
+import { createUuid } from "@antojit-os/domain";
 import type {
+  AccountManagementOptions,
+  AccountSummary,
   CatalogCategory,
+  Precheck,
   ProductionTicket,
   ServiceAccount,
   ServiceLayout,
@@ -33,7 +37,7 @@ export class PosApi {
   constructor(
     private readonly baseUrl: string,
     private accessToken?: string,
-    private readonly createIdempotencyKey: () => string = () => crypto.randomUUID(),
+    private readonly createIdempotencyKey: () => string = createUuid,
   ) {}
 
   setAccessToken(accessToken?: string): void {
@@ -102,6 +106,135 @@ export class PosApi {
 
   account(accountId: string): Promise<ServiceAccount> {
     return this.request(`/v1/accounts/${accountId}`);
+  }
+
+  async tableAccounts(tableId: string): Promise<AccountSummary[]> {
+    const result = await this.request<{ accounts: AccountSummary[] }>(
+      `/v1/accounts/table/${tableId}`,
+    );
+    return result.accounts;
+  }
+
+  accountManagementOptions(accountId: string): Promise<AccountManagementOptions> {
+    return this.request(`/v1/accounts/${accountId}/management-options`);
+  }
+
+  createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck> {
+    return this.request(`/v1/accounts/${accountId}/prechecks`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: { expectedVersion },
+    });
+  }
+
+  applyAccountAdjustment(
+    accountId: string,
+    input: {
+      kind: "discount" | "courtesy";
+      calculation: "percentage" | "fixed";
+      value: number;
+      expectedVersion: number;
+      reason: string;
+    },
+  ): Promise<{ accountVersion: number }> {
+    return this.request(`/v1/accounts/${accountId}/adjustments`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  voidAccountAdjustment(
+    accountId: string,
+    adjustmentId: string,
+    input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number }> {
+    return this.request(
+      `/v1/accounts/${accountId}/adjustments/${adjustmentId}/voids`,
+      {
+        method: "POST",
+        idempotencyKey: this.createIdempotencyKey(),
+        body: input,
+      },
+    );
+  }
+
+  updateAccountContext(
+    accountId: string,
+    input: {
+      expectedVersion: number;
+      tableId?: string;
+      responsibleUserId?: string;
+    },
+  ): Promise<{ accountVersion: number }> {
+    return this.request(`/v1/accounts/${accountId}/context`, {
+      method: "PATCH",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  splitAccount(
+    accountId: string,
+    input: {
+      expectedVersion: number;
+      items: Array<{ itemId: string; quantity: number }>;
+      reason: string;
+    },
+  ): Promise<{
+    sourceVersion: number;
+    destinationAccountId: string;
+    destinationVersion: number;
+  }> {
+    return this.request(`/v1/accounts/${accountId}/splits`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  transferAccountItems(
+    accountId: string,
+    input: {
+      destinationAccountId: string;
+      sourceExpectedVersion: number;
+      destinationExpectedVersion: number;
+      items: Array<{ itemId: string; quantity: number }>;
+      reason: string;
+    },
+  ): Promise<{ sourceVersion: number; destinationVersion: number }> {
+    return this.request(`/v1/accounts/${accountId}/transfers`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  mergeAccount(
+    accountId: string,
+    input: {
+      destinationAccountId: string;
+      sourceExpectedVersion: number;
+      destinationExpectedVersion: number;
+      reason: string;
+    },
+  ): Promise<{ destinationAccountId: string; destinationVersion: number }> {
+    return this.request(`/v1/accounts/${accountId}/merges`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  cancelAccount(
+    accountId: string,
+    input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number; status: "cancelled" }> {
+    return this.request(`/v1/accounts/${accountId}/cancellations`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
   }
 
   addItem(

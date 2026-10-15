@@ -1,8 +1,11 @@
 import { type FormEvent, useMemo, useState } from "react";
 import { ApiError, PosApi } from "./api/pos-api";
 import type {
+  AccountManagementOptions,
+  AccountSummary,
   CatalogCategory,
   CatalogProduct,
+  Precheck,
   RemoteOrderItem,
   ServiceAccount,
   ServiceLayout,
@@ -35,6 +38,59 @@ export interface RemoteApi {
     reference?: string;
   }): Promise<{ id: string }>;
   account(accountId: string): Promise<ServiceAccount>;
+  tableAccounts(tableId: string): Promise<AccountSummary[]>;
+  accountManagementOptions(accountId: string): Promise<AccountManagementOptions>;
+  createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck>;
+  applyAccountAdjustment(
+    accountId: string,
+    input: {
+      kind: "discount" | "courtesy";
+      calculation: "percentage" | "fixed";
+      value: number;
+      expectedVersion: number;
+      reason: string;
+    },
+  ): Promise<{ accountVersion: number }>;
+  voidAccountAdjustment(
+    accountId: string,
+    adjustmentId: string,
+    input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number }>;
+  updateAccountContext(
+    accountId: string,
+    input: { expectedVersion: number; tableId?: string; responsibleUserId?: string },
+  ): Promise<{ accountVersion: number }>;
+  splitAccount(
+    accountId: string,
+    input: {
+      expectedVersion: number;
+      items: Array<{ itemId: string; quantity: number }>;
+      reason: string;
+    },
+  ): Promise<{ sourceVersion: number; destinationAccountId: string; destinationVersion: number }>;
+  transferAccountItems(
+    accountId: string,
+    input: {
+      destinationAccountId: string;
+      sourceExpectedVersion: number;
+      destinationExpectedVersion: number;
+      items: Array<{ itemId: string; quantity: number }>;
+      reason: string;
+    },
+  ): Promise<{ sourceVersion: number; destinationVersion: number }>;
+  mergeAccount(
+    accountId: string,
+    input: {
+      destinationAccountId: string;
+      sourceExpectedVersion: number;
+      destinationExpectedVersion: number;
+      reason: string;
+    },
+  ): Promise<{ destinationAccountId: string; destinationVersion: number }>;
+  cancelAccount(
+    accountId: string,
+    input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number; status: "cancelled" }>;
   addItem(
     accountId: string,
     input: {
@@ -107,6 +163,17 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [noteDraft, setNoteDraft] = useState("");
   const [cancellingItem, setCancellingItem] = useState<RemoteOrderItem | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
+  const [precheck, setPrecheck] = useState<Precheck | null>(null);
+  const [accountChoices, setAccountChoices] = useState<AccountSummary[]>([]);
+  const [managementOpen, setManagementOpen] = useState(false);
+  const [managementOptions, setManagementOptions] = useState<AccountManagementOptions | null>(null);
+  const [managementReason, setManagementReason] = useState("");
+  const [discountPercent, setDiscountPercent] = useState("10");
+  const [movementTargetId, setMovementTargetId] = useState("");
+  const [selectedMovementItems, setSelectedMovementItems] = useState<string[]>([]);
+  const [confirmingAccountCancellation, setConfirmingAccountCancellation] = useState(false);
+  const [quickCancellationOpen, setQuickCancellationOpen] = useState(false);
+  const [quickCancellationReason, setQuickCancellationReason] = useState("");
 
   const loadServiceData = async () => {
     const [nextCatalog, nextLayout] = await Promise.all([
@@ -192,12 +259,20 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setCatalog([]);
     setLayout(null);
     setError(null);
+    setManagementOpen(false);
+    setPrecheck(null);
   };
 
   const selectTable = async (table: ServiceTable) => {
     setBusy(true);
     setError(null);
     try {
+      if (table.accountId && table.accountCount > 1) {
+        const choices = await api.tableAccounts(table.id);
+        setAccountChoices(choices);
+        setNotice(`${table.name} tiene ${choices.length} cuentas abiertas`);
+        return;
+      }
       const accountId = table.accountId ?? (await api.openAccount({
         serviceType: "table",
         tableId: table.id,
@@ -208,6 +283,20 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     } catch (selectionError) {
       setError(messageFor(selectionError));
       await loadServiceData().catch(() => undefined);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selectExistingAccount = async (accountId: string) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await refreshAccount(accountId);
+      setAccountChoices([]);
+      setNotice("Cuenta actualizada");
+    } catch (selectionError) {
+      setError(messageFor(selectionError));
     } finally {
       setBusy(false);
     }
@@ -351,6 +440,232 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const loadManagementOptions = async (accountId: string) => {
+    const options = await api.accountManagementOptions(accountId);
+    setManagementOptions(options);
+    setMovementTargetId((current) =>
+      options.accounts.some((candidate) => candidate.id === current)
+        ? current
+        : options.accounts[0]?.id ?? "",
+    );
+    return options;
+  };
+
+  const openManagement = async () => {
+    if (!account || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await loadManagementOptions(account.id);
+      setManagementReason("");
+      setSelectedMovementItems([]);
+      setConfirmingAccountCancellation(false);
+      setManagementOpen(true);
+    } catch (managementError) {
+      setError(messageFor(managementError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const generatePrecheck = async () => {
+    if (!account || busy || account.items.length === 0) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const nextPrecheck = await api.createPrecheck(account.id, account.version);
+      setPrecheck(nextPrecheck);
+      setNotice(`Precuenta #${nextPrecheck.sequence} generada`);
+    } catch (precheckError) {
+      await handleMutationError(precheckError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const applyDiscount = async () => {
+    if (!account || busy || !managementReason.trim()) return;
+    const percentage = Number(discountPercent);
+    if (!Number.isFinite(percentage) || percentage <= 0 || percentage > 100) {
+      setError("El descuento debe estar entre 0.01% y 100%");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.applyAccountAdjustment(account.id, {
+        kind: "discount",
+        calculation: "percentage",
+        value: Math.round(percentage * 100),
+        expectedVersion: account.version,
+        reason: managementReason.trim(),
+      });
+      const next = await refreshAccount(account.id);
+      await loadManagementOptions(account.id);
+      setManagementReason("");
+      setNotice(`Descuento aplicado. Nuevo total: ${formatMoney(next.totalInCents)}`);
+    } catch (discountError) {
+      await handleMutationError(discountError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const voidAdjustment = async (adjustmentId: string) => {
+    if (!account || busy || !managementReason.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.voidAccountAdjustment(account.id, adjustmentId, {
+        expectedVersion: account.version,
+        reason: managementReason.trim(),
+      });
+      await refreshAccount(account.id);
+      await loadManagementOptions(account.id);
+      setManagementReason("");
+      setNotice("Descuento anulado con trazabilidad");
+    } catch (voidError) {
+      await handleMutationError(voidError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const updateContext = async (change: { tableId?: string; responsibleUserId?: string }) => {
+    if (!account || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateAccountContext(account.id, {
+        expectedVersion: account.version,
+        ...change,
+      });
+      const next = await refreshAccount(account.id);
+      await loadManagementOptions(account.id);
+      setNotice(change.tableId ? `Cuenta movida a ${next.tableName}` : `Responsable: ${next.responsible.displayName}`);
+    } catch (contextError) {
+      await handleMutationError(contextError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const toggleMovementItem = (itemId: string) => {
+    setSelectedMovementItems((current) =>
+      current.includes(itemId)
+        ? current.filter((id) => id !== itemId)
+        : [...current, itemId],
+    );
+  };
+
+  const selectedItems = account?.items
+    .filter((item) => selectedMovementItems.includes(item.id))
+    .map((item) => ({ itemId: item.id, quantity: item.quantity })) ?? [];
+
+  const splitSelected = async () => {
+    if (!account || busy || selectedItems.length === 0 || !managementReason.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.splitAccount(account.id, {
+        expectedVersion: account.version,
+        items: selectedItems,
+        reason: managementReason.trim(),
+      });
+      await refreshAccount(account.id);
+      await loadManagementOptions(account.id);
+      setSelectedMovementItems([]);
+      setManagementReason("");
+      setNotice("Cuenta dividida; la mesa ahora muestra dos cuentas");
+    } catch (splitError) {
+      await handleMutationError(splitError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const transferSelected = async () => {
+    if (!account || !managementOptions || busy || selectedItems.length === 0 || !managementReason.trim()) return;
+    const destination = managementOptions.accounts.find(
+      (candidate) => candidate.id === movementTargetId,
+    );
+    if (!destination) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.transferAccountItems(account.id, {
+        destinationAccountId: destination.id,
+        sourceExpectedVersion: account.version,
+        destinationExpectedVersion: destination.version,
+        items: selectedItems,
+        reason: managementReason.trim(),
+      });
+      await refreshAccount(account.id);
+      await loadManagementOptions(account.id);
+      setSelectedMovementItems([]);
+      setManagementReason("");
+      setNotice(`Artículos transferidos a ${destination.label}`);
+    } catch (transferError) {
+      await handleMutationError(transferError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const mergeCurrent = async () => {
+    if (!account || !managementOptions || busy || !managementReason.trim()) return;
+    const destination = managementOptions.accounts.find(
+      (candidate) => candidate.id === movementTargetId,
+    );
+    if (!destination) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const merged = await api.mergeAccount(account.id, {
+        destinationAccountId: destination.id,
+        sourceExpectedVersion: account.version,
+        destinationExpectedVersion: destination.version,
+        reason: managementReason.trim(),
+      });
+      await refreshAccount(merged.destinationAccountId);
+      setManagementOpen(false);
+      setManagementOptions(null);
+      setSelectedMovementItems([]);
+      setManagementReason("");
+      setNotice(`Cuentas unidas en ${destination.label}`);
+    } catch (mergeError) {
+      await handleMutationError(mergeError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const cancelCurrentAccount = async (reason: string) => {
+    if (!account || busy || !reason.trim()) return;
+    const cancelledLabel = serviceLabel(account);
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelAccount(account.id, {
+        expectedVersion: account.version,
+        reason: reason.trim(),
+      });
+      setAccount(null);
+      setManagementOpen(false);
+      setManagementOptions(null);
+      setManagementReason("");
+      setConfirmingAccountCancellation(false);
+      setQuickCancellationOpen(false);
+      setQuickCancellationReason("");
+      await loadServiceData();
+      setNotice(account.tableId ? `${cancelledLabel} liberada` : `${cancelledLabel} cancelada`);
+    } catch (cancellationError) {
+      setError(messageFor(cancellationError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!terminal) {
     return (
       <AccessShell title="Configurar terminal" subtitle="Esta operación se realiza una sola vez en cada tablet.">
@@ -413,21 +728,44 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                   >
                     <span className="table-state">{table.state === "free" ? "Libre" : "Ocupada"}</span>
                     <strong>{table.name}</strong>
-                    <small>Hasta {table.capacity} personas</small>
+                    <small>{table.accountCount > 1 ? `${table.accountCount} cuentas abiertas` : `Hasta ${table.capacity} personas`}</small>
                   </button>
                 ))}
               </div>
             </section>
           ))}
         </section>
+        {accountChoices.length > 0 && (
+          <div className="modal-backdrop" role="presentation">
+            <section className="touch-modal account-picker" role="dialog" aria-modal="true" aria-labelledby="account-picker-title">
+              <div className="modal-heading"><div><span className="eyebrow">Mesa dividida</span><h2 id="account-picker-title">Selecciona una cuenta</h2></div><button type="button" aria-label="Cerrar" onClick={() => setAccountChoices([])}>×</button></div>
+              <div className="account-choice-grid">
+                {accountChoices.map((choice, index) => (
+                  <button type="button" key={choice.id} disabled={busy} onClick={() => void selectExistingAccount(choice.id)}>
+                    <span>Cuenta {index + 1}{choice.isPrimary ? " · Principal" : ""}</span>
+                    <strong>{formatMoney(choice.totalInCents)}</strong>
+                    <small>{choice.itemCount} productos · {choice.responsible.displayName}</small>
+                  </button>
+                ))}
+              </div>
+            </section>
+          </div>
+        )}
       </main>
     );
   }
 
   const activeCategory = catalog.find((category) => category.id === activeCategoryId) ?? catalog[0];
+  const canManageAccount = session.user.permissions.includes("service.account.manage");
+  const canDiscount = session.user.permissions.includes("service.account.discount");
+  const canCreatePrecheck = session.user.permissions.includes("service.precheck.create");
   const pendingCount = account.items
     .filter((item) => item.preparationState === "pending")
     .reduce((total, item) => total + item.quantity, 0);
+  const activeAccountItemCount = account.items
+    .filter((item) => item.preparationState !== "cancelled")
+    .reduce((total, item) => total + item.quantity, 0);
+  const canCancelAccount = activeAccountItemCount === 0 && account.adjustments.length === 0;
 
   return (
     <main className="app-shell remote-pos">
@@ -482,7 +820,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         <aside className="order-panel" aria-labelledby="order-title">
           <div className="order-heading">
             <div><span className="eyebrow">Cuenta actual</span><h2 id="order-title">{serviceLabel(account)}</h2></div>
-            <span className="version-pill" title="Versión de la cuenta">v{account.version}</span>
+            <div className="account-heading-actions"><span className="version-pill" title="Versión de la cuenta">v{account.version}</span>{canManageAccount && <button className="icon-button" type="button" aria-label="Gestionar cuenta" disabled={busy} onClick={() => void openManagement()}>•••</button>}</div>
           </div>
           <div className="order-items" aria-live="polite">
             {account.items.length === 0 ? (
@@ -510,17 +848,126 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           </div>
           <div className={error ? "notice error-notice" : "notice"} role={error ? "alert" : "status"}><span aria-hidden="true">●</span>{error ?? notice}</div>
           <div className="order-summary">
-            <div><span>Productos</span><strong>{account.items.reduce((total, item) => total + item.quantity, 0)}</strong></div>
-            <div><span>Precios</span><span>IVA incluido</span></div>
+            <div><span>Productos</span><strong>{account.items.filter((item) => item.preparationState !== "cancelled").reduce((total, item) => total + item.quantity, 0)}</strong></div>
+            <div><span>Subtotal</span><span>{formatMoney(account.totals.subtotalInCents)}</span></div>
+            {account.totals.discountInCents > 0 && <div className="discount-row"><span>Descuento</span><strong>− {formatMoney(account.totals.discountInCents)}</strong></div>}
+            <div><span>IVA</span><span>{formatMoney(account.totals.taxInCents)}</span></div>
             <div className="total-row"><span>Total</span><strong>{formatMoney(account.totalInCents)}</strong></div>
           </div>
           <div className="primary-actions">
             <button className="send-button" type="button" disabled={pendingCount === 0 || busy} onClick={() => void sendRound()}><span>{busy ? "Procesando…" : "Enviar comanda"}</span>{pendingCount > 0 && <span className="count-badge">{pendingCount}</span>}</button>
+            {canCreatePrecheck && <button className="precheck-button" type="button" disabled={account.totalInCents <= 0 || busy} onClick={() => void generatePrecheck()}>Precuenta</button>}
             <button className="pay-button" type="button" disabled>Pago (próxima fase)</button>
+            {canManageAccount && account.serviceType === "table" && <button className="release-table-button" type="button" disabled={busy} onClick={() => { setQuickCancellationReason(""); setQuickCancellationOpen(true); setError(null); }}>Liberar mesa</button>}
           </div>
         </aside>
       </section>
       <footer className="bottom-status"><span>Servidor local · Sesión protegida</span><span>{terminal.displayName} · AntojitOS</span></footer>
+
+      {precheck && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal precheck-modal" role="dialog" aria-modal="true" aria-labelledby="precheck-title">
+            <div className="modal-heading"><div><span className="eyebrow">Vista previa de cobro</span><h2 id="precheck-title">Precuenta #{precheck.sequence}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setPrecheck(null)}>×</button></div>
+            <div className="precheck-meta"><strong>AntojitOS</strong><span>{serviceLabel(precheck.account)}</span><small>{new Date(precheck.generatedAt).toLocaleString("es-MX")}</small></div>
+            <div className="precheck-items">
+              {precheck.account.items.filter((item) => item.preparationState !== "cancelled").map((item) => (
+                <div key={item.id}><span>{item.quantity} × {item.productName}</span><strong>{formatMoney(item.lineTotalInCents)}</strong></div>
+              ))}
+            </div>
+            <div className="precheck-totals">
+              <div><span>Subtotal</span><span>{formatMoney(precheck.account.totals.subtotalInCents)}</span></div>
+              {precheck.account.totals.discountInCents > 0 && <div><span>Descuento</span><span>− {formatMoney(precheck.account.totals.discountInCents)}</span></div>}
+              <div><span>IVA</span><span>{formatMoney(precheck.account.totals.taxInCents)}</span></div>
+              <div><strong>Total</strong><strong>{formatMoney(precheck.account.totalInCents)}</strong></div>
+            </div>
+            <p className="modal-help">Documento informativo; todavía no representa un pago ni cierra la cuenta.</p>
+            <div className="modal-actions single-action"><button className="access-primary" type="button" onClick={() => setPrecheck(null)}>Cerrar precuenta</button></div>
+          </section>
+        </div>
+      )}
+
+      {managementOpen && managementOptions && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal management-modal" role="dialog" aria-modal="true" aria-labelledby="management-title">
+            <div className="modal-heading"><div><span className="eyebrow">Operaciones auditadas</span><h2 id="management-title">Gestionar cuenta</h2></div><button type="button" aria-label="Cerrar" onClick={() => { setManagementOpen(false); setConfirmingAccountCancellation(false); }}>×</button></div>
+            {error && <p className="form-error" role="alert">{error}</p>}
+
+            <section className="management-section">
+              <h3>Responsable</h3>
+              <div className="management-options">
+                {managementOptions.users.map((user) => (
+                  <button className={account.responsible.id === user.id ? "selected" : ""} type="button" key={user.id} disabled={busy || account.responsible.id === user.id} onClick={() => void updateContext({ responsibleUserId: user.id })}>{user.displayName}</button>
+                ))}
+              </div>
+            </section>
+
+            {account.serviceType === "table" && (
+              <section className="management-section">
+                <h3>Cambiar mesa</h3>
+                <div className="management-options">
+                  {managementOptions.tables.map((table) => (
+                    <button className={account.tableId === table.id ? "selected" : ""} type="button" key={table.id} disabled={busy || account.tableId === table.id} onClick={() => void updateContext({ tableId: table.id })}>{table.name}</button>
+                  ))}
+                </div>
+              </section>
+            )}
+
+            {canDiscount && <section className="management-section">
+              <h3>Descuento</h3>
+              {account.adjustments.map((adjustment) => (
+                <div className="active-adjustment" key={adjustment.id}><span><strong>{adjustment.calculation === "percentage" ? `${adjustment.value / 100}%` : formatMoney(adjustment.value)}</strong><small>{adjustment.reason}</small></span><button type="button" disabled={busy || !managementReason.trim()} onClick={() => void voidAdjustment(adjustment.id)}>Anular</button></div>
+              ))}
+              <div className="discount-controls"><label>Porcentaje<input aria-label="Porcentaje de descuento" type="number" inputMode="decimal" min="0.01" max="100" step="0.01" value={discountPercent} onChange={(event) => setDiscountPercent(event.target.value)} /></label><button type="button" disabled={busy || !managementReason.trim()} onClick={() => void applyDiscount()}>Aplicar descuento</button></div>
+            </section>}
+
+            <section className="management-section">
+              <h3>Dividir, transferir o unir</h3>
+              {account.adjustments.length > 0 && <p className="management-hint">Anula los descuentos antes de mover artículos.</p>}
+              <div className="movement-items">
+                {account.items.filter((item) => item.preparationState !== "cancelled").map((item) => (
+                  <button className={selectedMovementItems.includes(item.id) ? "selected" : ""} type="button" key={item.id} aria-pressed={selectedMovementItems.includes(item.id)} disabled={busy || account.adjustments.length > 0} onClick={() => toggleMovementItem(item.id)}><span>{item.quantity} × {item.productName}</span><strong>{formatMoney(item.lineTotalInCents)}</strong></button>
+                ))}
+              </div>
+              <label className="management-select">Cuenta destino<select aria-label="Cuenta destino" value={movementTargetId} disabled={managementOptions.accounts.length === 0} onChange={(event) => setMovementTargetId(event.target.value)}><option value="">Sin cuenta destino</option>{managementOptions.accounts.map((candidate) => <option key={candidate.id} value={candidate.id}>{candidate.label} · {formatMoney(candidate.totalInCents)}</option>)}</select></label>
+              <div className="movement-actions">
+                <button type="button" disabled={busy || selectedItems.length === 0 || !managementReason.trim() || account.adjustments.length > 0} onClick={() => void splitSelected()}>Dividir selección</button>
+                <button type="button" disabled={busy || selectedItems.length === 0 || !movementTargetId || !managementReason.trim() || account.adjustments.length > 0} onClick={() => void transferSelected()}>Transferir</button>
+                <button type="button" disabled={busy || !movementTargetId || !managementReason.trim() || account.adjustments.length > 0} onClick={() => void mergeCurrent()}>Unir toda la cuenta</button>
+              </div>
+            </section>
+
+            <label className="management-reason">Motivo de la operación<textarea value={managementReason} maxLength={200} rows={2} onChange={(event) => setManagementReason(event.target.value)} /></label>
+
+            <section className="management-section danger-zone">
+              <h3>Cancelar cuenta</h3>
+              <p>Libera la mesa conservando la operación en la bitácora.</p>
+              {!canCancelAccount && <p className="management-hint">Cancela o transfiere todos los artículos y anula los descuentos antes de liberar la mesa.</p>}
+              {confirmingAccountCancellation ? (
+                <div className="danger-confirmation" role="alert">
+                  <strong>¿Confirmas que deseas cancelar {serviceLabel(account)}?</strong>
+                  <span>La mesa quedará libre y esta acción no se puede deshacer desde el punto de venta.</span>
+                  <div><button type="button" disabled={busy} onClick={() => setConfirmingAccountCancellation(false)}>Conservar cuenta</button><button className="danger-button" type="button" disabled={busy} onClick={() => void cancelCurrentAccount(managementReason)}>Confirmar cancelación</button></div>
+                </div>
+              ) : (
+                <button className="danger-button" type="button" disabled={busy || !managementReason.trim() || !canCancelAccount} onClick={() => setConfirmingAccountCancellation(true)}>{account.tableId ? "Cancelar cuenta y liberar mesa" : "Cancelar cuenta"}</button>
+              )}
+            </section>
+            <div className="modal-actions single-action"><button type="button" onClick={() => setManagementOpen(false)}>Listo</button></div>
+          </section>
+        </div>
+      )}
+
+      {quickCancellationOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="quick-cancel-title">
+            <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="quick-cancel-title">Liberar {serviceLabel(account)}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setQuickCancellationOpen(false)}>×</button></div>
+            <p className="modal-help">La cuenta se marcará como cancelada y la mesa volverá a estar disponible.</p>
+            {!canCancelAccount && <p className="form-error" role="alert">Primero cancela o transfiere todos los artículos y anula los descuentos vigentes.</p>}
+            <label>Motivo para liberar la mesa<textarea value={quickCancellationReason} maxLength={200} rows={3} autoFocus onChange={(event) => setQuickCancellationReason(event.target.value)} /></label>
+            <div className="modal-actions"><button type="button" onClick={() => setQuickCancellationOpen(false)}>Conservar cuenta</button><button className="danger-action" type="button" disabled={!canCancelAccount || !quickCancellationReason.trim() || busy} onClick={() => void cancelCurrentAccount(quickCancellationReason)}>Confirmar y liberar</button></div>
+          </section>
+        </div>
+      )}
 
       {modifierProduct && (
         <div className="modal-backdrop" role="presentation">

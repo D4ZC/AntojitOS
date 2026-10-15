@@ -16,10 +16,18 @@ import type { RequestWithAuth } from "../security/auth-context.js";
 import { RequirePermissions } from "../security/permissions.decorator.js";
 import { AccountsService } from "./accounts.service.js";
 import { AddOrderItemDto } from "./dto/add-order-item.dto.js";
+import { ApplyAccountAdjustmentDto } from "./dto/apply-account-adjustment.dto.js";
+import { CancelAccountDto } from "./dto/cancel-account.dto.js";
 import { CancelOrderItemDto } from "./dto/cancel-order-item.dto.js";
+import { CreatePrecheckDto } from "./dto/create-precheck.dto.js";
+import { MergeAccountDto } from "./dto/merge-account.dto.js";
 import { OpenAccountDto } from "./dto/open-account.dto.js";
 import { SendRoundDto } from "./dto/send-round.dto.js";
+import { SplitAccountDto } from "./dto/split-account.dto.js";
+import { TransferAccountItemsDto } from "./dto/transfer-account-items.dto.js";
+import { UpdateAccountContextDto } from "./dto/update-account-context.dto.js";
 import { UpdateOrderItemDto } from "./dto/update-order-item.dto.js";
+import { VoidAccountAdjustmentDto } from "./dto/void-account-adjustment.dto.js";
 
 const requireIdempotencyKey = (key: string | undefined): string => {
   if (!key || key.length > 128) {
@@ -34,6 +42,15 @@ const requireIdempotencyKey = (key: string | undefined): string => {
 export class AccountsController {
   constructor(@Inject(AccountsService) private readonly accounts: AccountsService) {}
 
+  @Get("table/:tableId")
+  @RequirePermissions("service.account.read")
+  listByTable(
+    @Param("tableId", ParseUUIDPipe) tableId: string,
+    @Req() request: RequestWithAuth,
+  ) {
+    return this.accounts.listByTable(tableId, request.auth);
+  }
+
   @Get(":accountId")
   @RequirePermissions("service.account.read")
   get(
@@ -41,6 +58,15 @@ export class AccountsController {
     @Req() request: RequestWithAuth,
   ) {
     return this.accounts.get(accountId, request.auth);
+  }
+
+  @Get(":accountId/management-options")
+  @RequirePermissions("service.account.manage")
+  managementOptions(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Req() request: RequestWithAuth,
+  ) {
+    return this.accounts.managementOptions(accountId, request.auth);
   }
 
   @Post()
@@ -128,6 +154,152 @@ export class AccountsController {
     const result = await this.accounts.cancelItem(
       accountId,
       itemId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/adjustments")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.discount")
+  async applyAdjustment(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: ApplyAccountAdjustmentDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.applyAdjustment(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/adjustments/:adjustmentId/voids")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.discount")
+  async voidAdjustment(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Param("adjustmentId", ParseUUIDPipe) adjustmentId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: VoidAccountAdjustmentDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.voidAdjustment(
+      accountId,
+      adjustmentId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/prechecks")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.precheck.create")
+  async createPrecheck(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: CreatePrecheckDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.createPrecheck(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/cancellations")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.manage")
+  async cancelAccount(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: CancelAccountDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.cancelAccount(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Patch(":accountId/context")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.manage")
+  async updateContext(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: UpdateAccountContextDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.updateContext(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/splits")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.manage")
+  async split(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: SplitAccountDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.split(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/transfers")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.manage")
+  async transferItems(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: TransferAccountItemsDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.transferItems(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post(":accountId/merges")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.account.manage")
+  async merge(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: MergeAccountDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.merge(
+      accountId,
       input,
       requireIdempotencyKey(key),
       request.auth,

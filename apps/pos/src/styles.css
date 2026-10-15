@@ -424,6 +424,17 @@ h2 {
   border-bottom: 1px solid #ece8df;
 }
 
+.account-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.account-heading-actions .icon-button {
+  width: 44px;
+  height: 44px;
+}
+
 .icon-button {
   width: 48px;
   height: 48px;
@@ -579,6 +590,11 @@ h2 {
   color: var(--ink);
 }
 
+.order-summary .discount-row,
+.discount-row strong {
+  color: #a14735;
+}
+
 .order-summary .total-row {
   margin-top: 3px;
   padding-top: 9px;
@@ -594,7 +610,7 @@ h2 {
 
 .primary-actions {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, 1fr);
   gap: 8px;
 }
 
@@ -615,6 +631,12 @@ h2 {
   background: #efebe2;
 }
 
+.precheck-button {
+  border: 1px solid #d3a84f;
+  color: #6f5116;
+  background: #fff1c9;
+}
+
 .count-badge {
   display: grid;
   min-width: 24px;
@@ -633,6 +655,14 @@ h2 {
 
 .pay-button:not(:disabled):active {
   background: #152a26;
+}
+
+.release-table-button {
+  grid-column: 1 / -1;
+  min-height: 48px !important;
+  border: 1px solid #ce8172;
+  color: #8c3023;
+  background: #fff3ef;
 }
 
 .bottom-status {
@@ -722,12 +752,6 @@ h2 {
   color: var(--muted);
   font-size: 13px;
   line-height: 1.45;
-}
-
-.modal-actions .danger-action {
-  border-color: #a9402e;
-  color: white;
-  background: #b94733;
 }
 
 .access-form input:focus,
@@ -1069,6 +1093,268 @@ h2 {
 }
 
 .modal-actions > button:not(.access-primary) {
+  background: white;
+}
+
+.modal-actions > button.danger-action {
+  border-color: #a9402e;
+  color: white;
+  background: #b94733;
+}
+
+.modal-actions.single-action {
+  grid-template-columns: 1fr;
+}
+
+.account-picker {
+  width: min(100%, 680px);
+}
+
+.account-choice-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.account-choice-grid button {
+  display: grid;
+  min-height: 112px;
+  align-content: center;
+  justify-items: start;
+  gap: 6px;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 17px;
+  background: white;
+  text-align: left;
+}
+
+.account-choice-grid button > span,
+.account-choice-grid button > small {
+  color: var(--muted);
+}
+
+.account-choice-grid button > strong {
+  font-size: 22px;
+}
+
+.precheck-modal {
+  width: min(100%, 480px);
+}
+
+.precheck-meta {
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  padding-bottom: 18px;
+  border-bottom: 1px dashed var(--line);
+}
+
+.precheck-meta > strong {
+  color: var(--forest);
+  font-size: 23px;
+}
+
+.precheck-meta > small {
+  color: var(--muted);
+}
+
+.precheck-items,
+.precheck-totals {
+  display: grid;
+  gap: 9px;
+  padding: 17px 0;
+  border-bottom: 1px dashed var(--line);
+}
+
+.precheck-items > div,
+.precheck-totals > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.precheck-totals > div:last-child {
+  padding-top: 9px;
+  border-top: 1px solid var(--line);
+  font-size: 19px;
+}
+
+.precheck-modal .modal-help {
+  margin: 16px 0 0;
+  text-align: center;
+}
+
+.management-modal {
+  width: min(100%, 760px);
+}
+
+.management-section {
+  padding: 17px 0;
+  border-top: 1px solid var(--line);
+}
+
+.management-section h3 {
+  margin: 0 0 11px;
+  color: var(--forest);
+  font-size: 15px;
+}
+
+.management-options,
+.movement-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.management-options button,
+.movement-actions button,
+.discount-controls > button,
+.active-adjustment > button {
+  min-height: 48px;
+  padding: 8px 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: white;
+  font-weight: 800;
+}
+
+.management-options button.selected {
+  border-color: var(--forest);
+  color: white;
+  background: var(--forest-2);
+}
+
+.active-adjustment {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+  padding: 10px 12px;
+  border-radius: 13px;
+  background: #fff1ed;
+}
+
+.active-adjustment > span {
+  display: grid;
+  gap: 3px;
+}
+
+.active-adjustment small,
+.management-hint {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.discount-controls {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: end;
+  gap: 9px;
+}
+
+.discount-controls label,
+.management-select,
+.management-reason {
+  display: grid;
+  gap: 6px;
+  color: #53605b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.discount-controls input,
+.management-select select,
+.management-reason textarea {
+  min-height: 50px;
+  padding: 10px 12px;
+  border: 1px solid #cec9be;
+  border-radius: 13px;
+  background: white;
+  font: inherit;
+}
+
+.movement-items {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
+  gap: 8px;
+  margin: 10px 0;
+}
+
+.movement-items button {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: white;
+  text-align: left;
+}
+
+.movement-items button.selected {
+  border-color: var(--forest);
+  color: white;
+  background: var(--forest-2);
+}
+
+.management-select {
+  margin: 12px 0;
+}
+
+.management-reason {
+  margin-top: 16px;
+}
+
+.management-reason textarea {
+  min-height: 76px;
+  resize: vertical;
+}
+
+.danger-zone {
+  margin-top: 16px;
+  padding: 16px;
+  border: 1px solid #e5b5aa;
+  border-radius: 15px;
+  background: #fff5f2;
+}
+
+.danger-zone p {
+  margin: 0 0 10px;
+}
+
+.danger-button,
+.danger-confirmation button {
+  min-height: 48px;
+  padding: 9px 14px;
+  border: 1px solid #c34835;
+  border-radius: 13px;
+  font-weight: 800;
+}
+
+.danger-button {
+  color: white;
+  background: #b93f2f;
+}
+
+.danger-confirmation {
+  display: grid;
+  gap: 8px;
+  color: #6e2d23;
+}
+
+.danger-confirmation > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.danger-confirmation > div > button:first-child {
+  color: #3e4945;
+  border-color: var(--line);
   background: white;
 }
 

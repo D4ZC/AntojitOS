@@ -7,7 +7,9 @@ import { runMigrations } from "./run-migrations.js";
 const ids = {
   site: "00000000-0000-4000-8000-000000000001",
   administratorRole: "00000000-0000-4000-8000-000000000010",
+  waiterRole: "00000000-0000-4000-8000-000000000011",
   administratorUser: "00000000-0000-4000-8000-000000000020",
+  waiterUser: "00000000-0000-4000-8000-000000000021",
   kitchen: "00000000-0000-4000-8000-000000000201",
   bar: "00000000-0000-4000-8000-000000000202",
   mainArea: "00000000-0000-4000-8000-000000000210",
@@ -39,10 +41,17 @@ loadEnvironment();
 const config = new AppConfigService();
 const database = new PostgresDatabase(config.databaseUrl);
 const adminPin = process.env.SEED_ADMIN_PIN ?? "1234";
+const waiterPin = process.env.SEED_WAITER_PIN ?? "2345";
 
 try {
   await runMigrations(database);
-  const pinHash = await hash(adminPin, {
+  const adminPinHash = await hash(adminPin, {
+    memoryCost: 19_456,
+    timeCost: 2,
+    parallelism: 1,
+    outputLen: 32,
+  });
+  const waiterPinHash = await hash(waiterPin, {
     memoryCost: 19_456,
     timeCost: 2,
     parallelism: 1,
@@ -63,10 +72,11 @@ try {
        ON CONFLICT (code) DO UPDATE SET description = EXCLUDED.description`,
     );
     await transaction.query(
-      `INSERT INTO roles (id, site_id, code, name)
-       VALUES ($1, $2, 'ADMINISTRATOR', 'Administrador')
+      `INSERT INTO roles (id, site_id, code, name) VALUES
+        ($1, $3, 'ADMINISTRATOR', 'Administrador'),
+        ($2, $3, 'WAITER', 'Mesero')
        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
-      [ids.administratorRole, ids.site],
+      [ids.administratorRole, ids.waiterRole, ids.site],
     );
     await transaction.query(
       `INSERT INTO role_permissions (role_id, permission_code)
@@ -75,24 +85,39 @@ try {
       [ids.administratorRole],
     );
     await transaction.query(
-      `INSERT INTO app_users (id, site_id, employee_code, display_name)
-       VALUES ($1, $2, 'ADMIN', 'Administrador')
-       ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name`,
-      [ids.administratorUser, ids.site],
-    );
-    await transaction.query(
-      `INSERT INTO user_roles (user_id, role_id)
-       VALUES ($1, $2)
+      `INSERT INTO role_permissions (role_id, permission_code)
+       SELECT $1, code FROM permissions
+        WHERE code IN (
+          'catalog.read', 'service.account.open', 'service.account.read',
+          'service.item.add', 'service.item.edit', 'service.item.cancel',
+          'service.round.send', 'service.account.manage',
+          'service.precheck.create'
+        )
        ON CONFLICT DO NOTHING`,
-      [ids.administratorUser, ids.administratorRole],
+      [ids.waiterRole],
     );
     await transaction.query(
-      `INSERT INTO user_pin_credentials (user_id, pin_hash)
-       VALUES ($1, $2)
+      `INSERT INTO app_users (id, site_id, employee_code, display_name) VALUES
+        ($1, $3, 'ADMIN', 'Administrador'),
+        ($2, $3, 'MESERO', 'Mesero de prueba')
+       ON CONFLICT (id) DO UPDATE SET display_name = EXCLUDED.display_name`,
+      [ids.administratorUser, ids.waiterUser, ids.site],
+    );
+    await transaction.query(
+      `INSERT INTO user_roles (user_id, role_id) VALUES
+        ($1, $3),
+        ($2, $4)
+       ON CONFLICT DO NOTHING`,
+      [ids.administratorUser, ids.waiterUser, ids.administratorRole, ids.waiterRole],
+    );
+    await transaction.query(
+      `INSERT INTO user_pin_credentials (user_id, pin_hash) VALUES
+        ($1, $3),
+        ($2, $4)
        ON CONFLICT (user_id) DO UPDATE
        SET pin_hash = EXCLUDED.pin_hash, failed_attempts = 0,
            locked_until = NULL, updated_at = now()`,
-      [ids.administratorUser, pinHash],
+      [ids.administratorUser, ids.waiterUser, adminPinHash, waiterPinHash],
     );
 
     await transaction.query(
@@ -220,7 +245,7 @@ try {
     );
   });
 
-  console.info("Datos piloto creados. Usuario: ADMIN");
+  console.info("Datos piloto creados. Usuarios: ADMIN y MESERO");
 } finally {
   await database.close();
 }

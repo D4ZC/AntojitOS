@@ -10,6 +10,9 @@ importers:
 
   apps/api:
     dependencies:
+      '@antojit-os/domain':
+        specifier: workspace:*
+        version: link:../../packages/domain
       '@fastify/cors':
         specifier: ^11.1.0
         version: 11.3.0

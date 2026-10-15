@@ -1,3 +1,5 @@
+import { createUuid } from "./uuid.js";
+
 export type ItemPreparationState = "pending" | "sent" | "cancelled";
 
 export interface Product {
@@ -31,10 +33,10 @@ export type OrderAction =
   | { type: "pending-items-sent" };
 
 const createItemId = (productId: string): string =>
-  `${productId}-${crypto.randomUUID()}`;
+  `${productId}-${createUuid()}`;
 
 export const createOrder = (label = "Mesa 4"): Order => ({
-  id: crypto.randomUUID(),
+  id: createUuid(),
   label,
   version: 0,
   items: [],
@@ -118,4 +120,3 @@ export const pendingItemCount = (order: Order): number =>
   order.items
     .filter((item) => item.preparationState === "pending")
     .reduce((total, item) => total + item.quantity, 0);
-

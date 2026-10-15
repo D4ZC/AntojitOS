@@ -26,6 +26,9 @@ describe("migraciones de fundación", () => {
     expect(tables.rows.map((row) => row.table_name)).toEqual(
       expect.arrayContaining([
         "app_users",
+        "account_adjustments",
+        "account_item_transfers",
+        "account_prechecks",
         "audit_events",
         "dining_areas",
         "idempotency_records",
@@ -44,6 +47,6 @@ describe("migraciones de fundación", () => {
     const applied = await database.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM schema_migrations",
     );
-    expect(applied.rows[0]?.count).toBe("3");
+    expect(applied.rows[0]?.count).toBe("4");
   });
 });

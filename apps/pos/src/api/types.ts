@@ -82,6 +82,7 @@ export interface ServiceTable {
   state: "free" | "occupied";
   accountId: string | null;
   accountVersion: number | null;
+  accountCount: number;
 }
 
 export interface ServiceLayout {
@@ -108,7 +109,18 @@ export interface RemoteOrderItem {
     priceDeltaInCents: number;
     quantity?: number;
   }>;
+  adjustmentInCents: number;
+  taxInCents: number;
   lineTotalInCents: number;
+}
+
+export interface AccountTotals {
+  itemTotalInCents: number;
+  subtotalInCents: number;
+  adjustmentTotalInCents: number;
+  discountInCents: number;
+  taxInCents: number;
+  totalInCents: number;
 }
 
 export interface ServiceAccount {
@@ -120,6 +132,49 @@ export interface ServiceAccount {
   reference: string | null;
   guestCount: number;
   version: number;
+  accountGroupId: string;
+  isPrimary: boolean;
+  responsible: { id: string; displayName: string };
   items: RemoteOrderItem[];
+  adjustments: Array<{
+    id: string;
+    kind: "discount" | "courtesy";
+    calculation: "percentage" | "fixed";
+    value: number;
+    reason: string;
+    createdAt: string;
+    appliedInCents: number;
+  }>;
+  totals: AccountTotals;
   totalInCents: number;
+}
+
+export interface AccountSummary {
+  id: string;
+  label: string;
+  version: number;
+  guestCount: number;
+  responsible: { id: string; displayName: string };
+  itemCount: number;
+  totalInCents: number;
+  isPrimary: boolean;
+}
+
+export interface AccountManagementOptions {
+  users: Array<{ id: string; displayName: string }>;
+  tables: Array<{ id: string; name: string }>;
+  accounts: Array<{
+    id: string;
+    label: string;
+    version: number;
+    totalInCents: number;
+    responsible: { id: string; displayName: string };
+  }>;
+}
+
+export interface Precheck {
+  id: string;
+  sequence: number;
+  generatedAt: string;
+  account: ServiceAccount;
 }
