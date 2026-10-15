@@ -178,3 +178,59 @@ export interface Precheck {
   generatedAt: string;
   account: ServiceAccount;
 }
+
+export interface CashShiftContext {
+  register: { id: string; code: string; name: string };
+  shift: null | {
+    id: string;
+    status: "open";
+    version: number;
+    openingFloatInCents: number;
+    openedBy: { id: string; displayName: string };
+    openedAt: string;
+  };
+}
+
+export interface PaymentMethod {
+  id: string;
+  code: "CASH" | "CARD" | "TRANSFER";
+  name: string;
+  supportsChange: boolean;
+  requiresReference: boolean;
+}
+
+export interface CheckoutPayment {
+  methodCode: "CASH" | "CARD" | "TRANSFER";
+  amountInCents: number;
+  tipInCents: number;
+  tenderedInCents?: number;
+  reference?: string;
+}
+
+export interface SalesReceipt {
+  id: string;
+  folio: string;
+  status: "issued";
+  issuedAt: string;
+  shift: {
+    id: string;
+    register: { id: string; code: string; name: string };
+  };
+  account: ServiceAccount;
+  payments: Array<{
+    id: string;
+    method: PaymentMethod;
+    amountInCents: number;
+    tipInCents: number;
+    totalInCents: number;
+    tenderedInCents: number | null;
+    changeInCents: number;
+    reference: string | null;
+  }>;
+  totals: {
+    saleInCents: number;
+    tipInCents: number;
+    collectedInCents: number;
+    changeInCents: number;
+  };
+}

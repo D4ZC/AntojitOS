@@ -2,12 +2,16 @@ import { createUuid } from "@antojit-os/domain";
 import type {
   AccountManagementOptions,
   AccountSummary,
+  CashShiftContext,
   CatalogCategory,
+  CheckoutPayment,
+  PaymentMethod,
   Precheck,
   ProductionTicket,
   ServiceAccount,
   ServiceLayout,
   Session,
+  SalesReceipt,
   TerminalCredentials,
 } from "./types";
 
@@ -117,6 +121,40 @@ export class PosApi {
 
   accountManagementOptions(accountId: string): Promise<AccountManagementOptions> {
     return this.request(`/v1/accounts/${accountId}/management-options`);
+  }
+
+  currentCashShift(): Promise<CashShiftContext> {
+    return this.request("/v1/cash/current-shift");
+  }
+
+  openCashShift(openingFloatInCents: number): Promise<CashShiftContext> {
+    return this.request("/v1/cash/shifts", {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: { openingFloatInCents },
+    });
+  }
+
+  async paymentMethods(): Promise<PaymentMethod[]> {
+    const result = await this.request<{ paymentMethods: PaymentMethod[] }>(
+      "/v1/sales/payment-methods",
+    );
+    return result.paymentMethods;
+  }
+
+  checkoutAccount(
+    accountId: string,
+    input: { expectedVersion: number; payments: CheckoutPayment[] },
+  ): Promise<SalesReceipt> {
+    return this.request(`/v1/sales/accounts/${accountId}/checkout`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  receipt(receiptId: string): Promise<SalesReceipt> {
+    return this.request(`/v1/sales/receipts/${receiptId}`);
   }
 
   createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck> {

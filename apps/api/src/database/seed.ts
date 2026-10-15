@@ -14,6 +14,10 @@ const ids = {
   bar: "00000000-0000-4000-8000-000000000202",
   mainArea: "00000000-0000-4000-8000-000000000210",
   tax: "00000000-0000-4000-8000-000000000230",
+  cashRegister: "00000000-0000-4000-8000-000000000600",
+  cashPaymentMethod: "00000000-0000-4000-8000-000000000610",
+  cardPaymentMethod: "00000000-0000-4000-8000-000000000611",
+  transferPaymentMethod: "00000000-0000-4000-8000-000000000612",
 };
 
 const categories = [
@@ -64,6 +68,33 @@ try {
        VALUES ($1, 'PILOT', 'Sucursal piloto')
        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
       [ids.site],
+    );
+    await transaction.query(
+      `INSERT INTO cash_registers (id, site_id, code, name)
+       VALUES ($1, $2, 'MAIN', 'Caja principal')
+       ON CONFLICT (site_id, code) DO UPDATE
+       SET name = EXCLUDED.name, active = true`,
+      [ids.cashRegister, ids.site],
+    );
+    await transaction.query(
+      `INSERT INTO payment_methods (
+         id, site_id, code, name, supports_change, requires_reference, display_order
+       ) VALUES
+         ($1, $4, 'CASH', 'Efectivo', true, false, 1),
+         ($2, $4, 'CARD', 'Tarjeta', false, true, 2),
+         ($3, $4, 'TRANSFER', 'Transferencia', false, true, 3)
+       ON CONFLICT (site_id, code) DO UPDATE SET
+         name = EXCLUDED.name,
+         supports_change = EXCLUDED.supports_change,
+         requires_reference = EXCLUDED.requires_reference,
+         display_order = EXCLUDED.display_order,
+         active = true`,
+      [
+        ids.cashPaymentMethod,
+        ids.cardPaymentMethod,
+        ids.transferPaymentMethod,
+        ids.site,
+      ],
     );
     await transaction.query(
       `INSERT INTO permissions (code, description) VALUES

@@ -18,6 +18,10 @@ export const fixtureIds = {
   price: "10000000-0000-4000-8000-000000000011",
   modifierGroup: "10000000-0000-4000-8000-000000000012",
   modifier: "10000000-0000-4000-8000-000000000013",
+  cashRegister: "10000000-0000-4000-8000-000000000016",
+  cashPaymentMethod: "10000000-0000-4000-8000-000000000017",
+  cardPaymentMethod: "10000000-0000-4000-8000-000000000018",
+  transferPaymentMethod: "10000000-0000-4000-8000-000000000019",
 };
 
 export const createServiceFixture = async (): Promise<TestDatabase> => {
@@ -28,6 +32,25 @@ export const createServiceFixture = async (): Promise<TestDatabase> => {
     await transaction.query(
       "INSERT INTO sites (id, code, name) VALUES ($1, 'PILOT', 'Piloto')",
       [fixtureIds.site],
+    );
+    await transaction.query(
+      `INSERT INTO cash_registers (id, site_id, code, name)
+       VALUES ($1, $2, 'MAIN', 'Caja principal')`,
+      [fixtureIds.cashRegister, fixtureIds.site],
+    );
+    await transaction.query(
+      `INSERT INTO payment_methods (
+         id, site_id, code, name, supports_change, requires_reference, display_order
+       ) VALUES
+         ($1, $4, 'CASH', 'Efectivo', true, false, 1),
+         ($2, $4, 'CARD', 'Tarjeta', false, true, 2),
+         ($3, $4, 'TRANSFER', 'Transferencia', false, true, 3)`,
+      [
+        fixtureIds.cashPaymentMethod,
+        fixtureIds.cardPaymentMethod,
+        fixtureIds.transferPaymentMethod,
+        fixtureIds.site,
+      ],
     );
     await transaction.query(
       `INSERT INTO app_users (id, site_id, employee_code, display_name)

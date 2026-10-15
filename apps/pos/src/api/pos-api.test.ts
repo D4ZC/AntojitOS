@@ -126,4 +126,41 @@ describe("PosApi", () => {
       }),
     });
   });
+
+  it("envía el cobro completo con una sola clave idempotente", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
+      id: "receipt-1",
+      folio: "T-000001",
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new PosApi("/api", "access-token", () => "checkout-key");
+
+    await api.checkoutAccount("account-1", {
+      expectedVersion: 4,
+      payments: [{
+        methodCode: "CASH",
+        amountInCents: 4200,
+        tipInCents: 420,
+        tenderedInCents: 5000,
+      }],
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/sales/accounts/account-1/checkout", {
+      method: "POST",
+      headers: {
+        authorization: "Bearer access-token",
+        "content-type": "application/json",
+        "idempotency-key": "checkout-key",
+      },
+      body: JSON.stringify({
+        expectedVersion: 4,
+        payments: [{
+          methodCode: "CASH",
+          amountInCents: 4200,
+          tipInCents: 420,
+          tenderedInCents: 5000,
+        }],
+      }),
+    });
+  });
 });

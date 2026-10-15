@@ -2,7 +2,10 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RemotePosApp, type RemoteApi } from "./RemotePosApp";
 import type {
+  CashShiftContext,
   CatalogCategory,
+  PaymentMethod,
+  SalesReceipt,
   ServiceAccount,
   ServiceLayout,
   Session,
@@ -25,6 +28,10 @@ const session: Session = {
       "service.account.manage",
       "service.account.discount",
       "service.precheck.create",
+      "cash.shift.read",
+      "cash.shift.open",
+      "sales.payment.capture",
+      "sales.receipt.read",
     ],
   },
 };
@@ -124,6 +131,63 @@ const sentAccount: ServiceAccount = {
   items: pendingAccount.items.map((item) => ({ ...item, preparationState: "sent" })),
 };
 
+const cashShiftContext: CashShiftContext = {
+  register: { id: "register-1", code: "MAIN", name: "Caja principal" },
+  shift: {
+    id: "shift-1",
+    status: "open",
+    version: 0,
+    openingFloatInCents: 50_000,
+    openedBy: { id: "user-1", displayName: "Administrador" },
+    openedAt: "2030-01-01T10:00:00.000Z",
+  },
+};
+
+const paymentMethods: PaymentMethod[] = [
+  {
+    id: "method-cash",
+    code: "CASH",
+    name: "Efectivo",
+    supportsChange: true,
+    requiresReference: false,
+  },
+  {
+    id: "method-card",
+    code: "CARD",
+    name: "Tarjeta",
+    supportsChange: false,
+    requiresReference: true,
+  },
+];
+
+const paidReceipt: SalesReceipt = {
+  id: "receipt-1",
+  folio: "T-000001",
+  status: "issued",
+  issuedAt: "2030-01-01T12:00:00.000Z",
+  shift: {
+    id: "shift-1",
+    register: { id: "register-1", code: "MAIN", name: "Caja principal" },
+  },
+  account: sentAccount,
+  payments: [{
+    id: "payment-1",
+    method: paymentMethods[0]!,
+    amountInCents: 4200,
+    tipInCents: 420,
+    totalInCents: 4620,
+    tenderedInCents: 5000,
+    changeInCents: 380,
+    reference: null,
+  }],
+  totals: {
+    saleInCents: 4200,
+    tipInCents: 420,
+    collectedInCents: 4620,
+    changeInCents: 380,
+  },
+};
+
 const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   setAccessToken: vi.fn(),
   registerTerminal: vi.fn().mockResolvedValue(terminal),
@@ -138,6 +202,10 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
     tables: [{ id: "table-1", name: "Mesa 1" }],
     accounts: [],
   }),
+  currentCashShift: vi.fn().mockResolvedValue(cashShiftContext),
+  openCashShift: vi.fn().mockResolvedValue(cashShiftContext),
+  paymentMethods: vi.fn().mockResolvedValue(paymentMethods),
+  checkoutAccount: vi.fn().mockResolvedValue(paidReceipt),
   createPrecheck: vi.fn().mockResolvedValue({
     id: "precheck-1",
     sequence: 1,
@@ -315,5 +383,54 @@ describe("POS conectado", () => {
       reason: "Mesa abierta por error",
     }));
     expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
+  });
+
+  it("cobra en efectivo, calcula propina/cambio y muestra el ticket", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(sentAccount) });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pago" }));
+    expect(await screen.findByRole("heading", { name: "Cobrar Mesa 1" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "10%" }));
+    fireEvent.change(screen.getByLabelText("Efectivo recibido"), {
+      target: { value: "50.00" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pago" }));
+
+    await waitFor(() => expect(api.checkoutAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 2,
+      payments: [{
+        methodCode: "CASH",
+        amountInCents: 4200,
+        tipInCents: 420,
+        tenderedInCents: 5000,
+      }],
+    }));
+    expect(await screen.findByRole("heading", { name: "Ticket T-000001" })).toBeInTheDocument();
+    expect(screen.getByText("$3.80")).toBeInTheDocument();
+  });
+
+  it("abre el turno de caja antes del primer cobro", async () => {
+    storeTerminal();
+    const withoutShift: CashShiftContext = {
+      register: cashShiftContext.register,
+      shift: null,
+    };
+    const api = createApi({
+      account: vi.fn().mockResolvedValue(sentAccount),
+      currentCashShift: vi.fn().mockResolvedValue(withoutShift),
+    });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "Pago" }));
+    expect(await screen.findByRole("heading", { name: "Abrir turno de caja" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Fondo inicial"), {
+      target: { value: "750.00" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Abrir turno" }));
+
+    await waitFor(() => expect(api.openCashShift).toHaveBeenCalledWith(75_000));
+    expect(await screen.findByRole("heading", { name: "Cobrar Mesa 1" })).toBeInTheDocument();
   });
 });

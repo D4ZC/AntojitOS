@@ -143,7 +143,7 @@ export class AccountsService {
     return this.readAccount(this.database, accountId, actor.siteId);
   }
 
-  private async readAccount(
+  async readAccount(
     session: DatabaseSession,
     accountId: string,
     siteId: string,

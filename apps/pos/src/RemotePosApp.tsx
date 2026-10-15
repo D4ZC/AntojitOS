@@ -3,14 +3,18 @@ import { ApiError, PosApi } from "./api/pos-api";
 import type {
   AccountManagementOptions,
   AccountSummary,
+  CashShiftContext,
   CatalogCategory,
   CatalogProduct,
+  CheckoutPayment,
+  PaymentMethod,
   Precheck,
   RemoteOrderItem,
   ServiceAccount,
   ServiceLayout,
   ServiceTable,
   Session,
+  SalesReceipt,
   TerminalCredentials,
 } from "./api/types";
 import { formatMoney } from "./format";
@@ -40,6 +44,13 @@ export interface RemoteApi {
   account(accountId: string): Promise<ServiceAccount>;
   tableAccounts(tableId: string): Promise<AccountSummary[]>;
   accountManagementOptions(accountId: string): Promise<AccountManagementOptions>;
+  currentCashShift(): Promise<CashShiftContext>;
+  openCashShift(openingFloatInCents: number): Promise<CashShiftContext>;
+  paymentMethods(): Promise<PaymentMethod[]>;
+  checkoutAccount(
+    accountId: string,
+    input: { expectedVersion: number; payments: CheckoutPayment[] },
+  ): Promise<SalesReceipt>;
   createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck>;
   applyAccountAdjustment(
     accountId: string,
@@ -142,6 +153,16 @@ const serviceLabel = (account: ServiceAccount): string => {
   return account.reference || "Venta rápida";
 };
 
+const moneyInput = (cents: number): string => (cents / 100).toFixed(2);
+
+const moneyInputToCents = (value: string): number | null => {
+  const amount = Number(value.replace(",", "."));
+  if (!Number.isFinite(amount) || amount < 0) return null;
+  return Math.round(amount * 100);
+};
+
+type PaymentMode = "cash" | "card" | "combined";
+
 export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }: RemotePosAppProps) => {
   const api = useMemo<RemoteApi>(
     () => injectedApi ?? new PosApi(import.meta.env.VITE_API_URL || "/api"),
@@ -174,6 +195,17 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [confirmingAccountCancellation, setConfirmingAccountCancellation] = useState(false);
   const [quickCancellationOpen, setQuickCancellationOpen] = useState(false);
   const [quickCancellationReason, setQuickCancellationReason] = useState("");
+  const [checkoutOpen, setCheckoutOpen] = useState(false);
+  const [cashShiftContext, setCashShiftContext] = useState<CashShiftContext | null>(null);
+  const [paymentMethods, setPaymentMethods] = useState<PaymentMethod[]>([]);
+  const [openingFloat, setOpeningFloat] = useState("500.00");
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>("cash");
+  const [tipPercent, setTipPercent] = useState("0");
+  const [cashTendered, setCashTendered] = useState("0.00");
+  const [combinedCashAmount, setCombinedCashAmount] = useState("0.00");
+  const [cardReference, setCardReference] = useState("");
+  const [checkoutError, setCheckoutError] = useState<string | null>(null);
+  const [receipt, setReceipt] = useState<SalesReceipt | null>(null);
 
   const loadServiceData = async () => {
     const [nextCatalog, nextLayout] = await Promise.all([
@@ -666,6 +698,193 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const openCheckout = async () => {
+    if (!account || busy) return;
+    setBusy(true);
+    setError(null);
+    setCheckoutError(null);
+    try {
+      const [nextShiftContext, nextPaymentMethods] = await Promise.all([
+        api.currentCashShift(),
+        api.paymentMethods(),
+      ]);
+      setCashShiftContext(nextShiftContext);
+      setPaymentMethods(nextPaymentMethods);
+      setOpeningFloat("500.00");
+      setPaymentMode("cash");
+      setTipPercent("0");
+      setCashTendered(moneyInput(account.totalInCents));
+      const half = Math.max(1, Math.floor(account.totalInCents / 2));
+      setCombinedCashAmount(moneyInput(half));
+      setCardReference("");
+      setCheckoutOpen(true);
+    } catch (checkoutLoadError) {
+      setError(messageFor(checkoutLoadError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openCashShift = async () => {
+    const openingFloatInCents = moneyInputToCents(openingFloat);
+    if (openingFloatInCents === null) {
+      setCheckoutError("Captura un fondo inicial válido");
+      return;
+    }
+    setBusy(true);
+    setCheckoutError(null);
+    try {
+      setCashShiftContext(await api.openCashShift(openingFloatInCents));
+      setNotice("Turno de caja abierto");
+    } catch (shiftError) {
+      if (shiftError instanceof ApiError && shiftError.status === 409) {
+        const current = await api.currentCashShift().catch(() => null);
+        if (current?.shift) {
+          setCashShiftContext(current);
+          setNotice("Se usará el turno de caja que ya estaba abierto");
+          return;
+        }
+      }
+      setCheckoutError(messageFor(shiftError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const choosePaymentMode = (mode: PaymentMode) => {
+    if (!account) return;
+    const percentage = Number(tipPercent);
+    const tip = Number.isFinite(percentage)
+      ? Math.round(account.totalInCents * percentage / 100)
+      : 0;
+    setPaymentMode(mode);
+    setCheckoutError(null);
+    if (mode === "cash") {
+      setCashTendered(moneyInput(account.totalInCents + tip));
+    } else if (mode === "combined") {
+      const half = Math.max(1, Math.floor(account.totalInCents / 2));
+      setCombinedCashAmount(moneyInput(half));
+      setCashTendered(moneyInput(half));
+    }
+  };
+
+  const updateTipPercent = (value: string) => {
+    setTipPercent(value);
+    if (!account || paymentMode !== "cash") return;
+    const percentage = Number(value);
+    const tip = Number.isFinite(percentage) && percentage >= 0
+      ? Math.round(account.totalInCents * percentage / 100)
+      : 0;
+    setCashTendered(moneyInput(account.totalInCents + tip));
+  };
+
+  const capturePayment = async () => {
+    if (!account || busy) return;
+    const percentage = Number(tipPercent);
+    if (!Number.isFinite(percentage) || percentage < 0 || percentage > 100) {
+      setCheckoutError("La propina debe estar entre 0% y 100%");
+      return;
+    }
+    const tipInCents = Math.round(account.totalInCents * percentage / 100);
+    const hasMethod = (code: PaymentMethod["code"]) =>
+      paymentMethods.some((method) => method.code === code);
+    const payments: CheckoutPayment[] = [];
+
+    if (paymentMode === "cash") {
+      const tenderedInCents = moneyInputToCents(cashTendered);
+      if (!hasMethod("CASH") || tenderedInCents === null) {
+        setCheckoutError("Captura un importe válido de efectivo recibido");
+        return;
+      }
+      if (tenderedInCents < account.totalInCents + tipInCents) {
+        setCheckoutError("El efectivo recibido no cubre la cuenta y la propina");
+        return;
+      }
+      payments.push({
+        methodCode: "CASH",
+        amountInCents: account.totalInCents,
+        tipInCents,
+        tenderedInCents,
+      });
+    } else if (paymentMode === "card") {
+      if (!hasMethod("CARD") || !cardReference.trim()) {
+        setCheckoutError("Captura la autorización o referencia de la tarjeta");
+        return;
+      }
+      payments.push({
+        methodCode: "CARD",
+        amountInCents: account.totalInCents,
+        tipInCents,
+        reference: cardReference.trim(),
+      });
+    } else {
+      const cashAmountInCents = moneyInputToCents(combinedCashAmount);
+      const tenderedInCents = moneyInputToCents(cashTendered);
+      if (!hasMethod("CASH") || !hasMethod("CARD")) {
+        setCheckoutError("Efectivo o tarjeta no están configurados");
+        return;
+      }
+      if (
+        cashAmountInCents === null || cashAmountInCents <= 0 ||
+        cashAmountInCents >= account.totalInCents
+      ) {
+        setCheckoutError("La parte en efectivo debe ser mayor a cero y menor al total");
+        return;
+      }
+      if (tenderedInCents === null || tenderedInCents < cashAmountInCents) {
+        setCheckoutError("El efectivo recibido no cubre la parte en efectivo");
+        return;
+      }
+      if (!cardReference.trim()) {
+        setCheckoutError("Captura la autorización o referencia de la tarjeta");
+        return;
+      }
+      payments.push(
+        {
+          methodCode: "CASH",
+          amountInCents: cashAmountInCents,
+          tipInCents: 0,
+          tenderedInCents,
+        },
+        {
+          methodCode: "CARD",
+          amountInCents: account.totalInCents - cashAmountInCents,
+          tipInCents,
+          reference: cardReference.trim(),
+        },
+      );
+    }
+
+    setBusy(true);
+    setCheckoutError(null);
+    try {
+      const nextReceipt = await api.checkoutAccount(account.id, {
+        expectedVersion: account.version,
+        payments,
+      });
+      setReceipt(nextReceipt);
+      setCheckoutOpen(false);
+      setNotice(`Pago confirmado · ${nextReceipt.folio}`);
+    } catch (paymentError) {
+      setCheckoutError(messageFor(paymentError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeReceipt = async () => {
+    setReceipt(null);
+    setAccount(null);
+    setBusy(true);
+    try {
+      await loadServiceData();
+    } catch (refreshError) {
+      setError(messageFor(refreshError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!terminal) {
     return (
       <AccessShell title="Configurar terminal" subtitle="Esta operación se realiza una sola vez en cada tablet.">
@@ -759,6 +978,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const canManageAccount = session.user.permissions.includes("service.account.manage");
   const canDiscount = session.user.permissions.includes("service.account.discount");
   const canCreatePrecheck = session.user.permissions.includes("service.precheck.create");
+  const canCapturePayment = session.user.permissions.includes("sales.payment.capture");
   const pendingCount = account.items
     .filter((item) => item.preparationState === "pending")
     .reduce((total, item) => total + item.quantity, 0);
@@ -766,6 +986,24 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     .filter((item) => item.preparationState !== "cancelled")
     .reduce((total, item) => total + item.quantity, 0);
   const canCancelAccount = activeAccountItemCount === 0 && account.adjustments.length === 0;
+  const numericTipPercent = Number(tipPercent);
+  const checkoutTipInCents = Number.isFinite(numericTipPercent) && numericTipPercent >= 0
+    ? Math.round(account.totalInCents * numericTipPercent / 100)
+    : 0;
+  const checkoutCashTenderedInCents = moneyInputToCents(cashTendered) ?? 0;
+  const checkoutCombinedCashInCents = moneyInputToCents(combinedCashAmount) ?? 0;
+  const checkoutCashRequiredInCents = paymentMode === "cash"
+    ? account.totalInCents + checkoutTipInCents
+    : paymentMode === "combined"
+      ? checkoutCombinedCashInCents
+      : 0;
+  const checkoutChangeInCents = Math.max(
+    0,
+    checkoutCashTenderedInCents - checkoutCashRequiredInCents,
+  );
+  const checkoutCardInCents = paymentMode === "combined"
+    ? Math.max(0, account.totalInCents - checkoutCombinedCashInCents)
+    : account.totalInCents;
 
   return (
     <main className="app-shell remote-pos">
@@ -857,7 +1095,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <div className="primary-actions">
             <button className="send-button" type="button" disabled={pendingCount === 0 || busy} onClick={() => void sendRound()}><span>{busy ? "Procesando…" : "Enviar comanda"}</span>{pendingCount > 0 && <span className="count-badge">{pendingCount}</span>}</button>
             {canCreatePrecheck && <button className="precheck-button" type="button" disabled={account.totalInCents <= 0 || busy} onClick={() => void generatePrecheck()}>Precuenta</button>}
-            <button className="pay-button" type="button" disabled>Pago (próxima fase)</button>
+            <button className="pay-button" type="button" disabled={!canCapturePayment || account.totalInCents <= 0 || pendingCount > 0 || busy} onClick={() => void openCheckout()}>{canCapturePayment ? "Pago" : "Pago restringido"}</button>
             {canManageAccount && account.serviceType === "table" && <button className="release-table-button" type="button" disabled={busy} onClick={() => { setQuickCancellationReason(""); setQuickCancellationOpen(true); setError(null); }}>Liberar mesa</button>}
           </div>
         </aside>
@@ -882,6 +1120,88 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             </div>
             <p className="modal-help">Documento informativo; todavía no representa un pago ni cierra la cuenta.</p>
             <div className="modal-actions single-action"><button className="access-primary" type="button" onClick={() => setPrecheck(null)}>Cerrar precuenta</button></div>
+          </section>
+        </div>
+      )}
+
+      {checkoutOpen && cashShiftContext && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal checkout-modal" role="dialog" aria-modal="true" aria-labelledby="checkout-title">
+            {cashShiftContext.shift ? (
+              <>
+                <div className="modal-heading"><div><span className="eyebrow">{cashShiftContext.register.name}</span><h2 id="checkout-title">Cobrar {serviceLabel(account)}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setCheckoutOpen(false)}>×</button></div>
+                {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
+                <div className="payment-mode-options" aria-label="Forma de pago">
+                  <button className={paymentMode === "cash" ? "selected" : ""} type="button" aria-pressed={paymentMode === "cash"} onClick={() => choosePaymentMode("cash")}>Efectivo</button>
+                  <button className={paymentMode === "card" ? "selected" : ""} type="button" aria-pressed={paymentMode === "card"} onClick={() => choosePaymentMode("card")}>Tarjeta</button>
+                  <button className={paymentMode === "combined" ? "selected" : ""} type="button" aria-pressed={paymentMode === "combined"} onClick={() => choosePaymentMode("combined")}>Combinado</button>
+                </div>
+
+                <section className="checkout-section">
+                  <h3>Propina</h3>
+                  <div className="tip-options">
+                    {[0, 10, 15].map((percentage) => (
+                      <button className={tipPercent === String(percentage) ? "selected" : ""} type="button" key={percentage} aria-pressed={tipPercent === String(percentage)} onClick={() => updateTipPercent(String(percentage))}>{percentage}%</button>
+                    ))}
+                    <label>Otro %<input aria-label="Porcentaje de propina" type="number" inputMode="decimal" min="0" max="100" step="0.01" value={tipPercent} onChange={(event) => updateTipPercent(event.target.value)} /></label>
+                  </div>
+                  {paymentMode === "combined" && checkoutTipInCents > 0 && <p className="management-hint">La propina se cargará a la tarjeta.</p>}
+                </section>
+
+                <section className="checkout-section payment-entry">
+                  {paymentMode === "cash" && <label>Efectivo recibido<input aria-label="Efectivo recibido" type="number" inputMode="decimal" min="0" step="0.01" value={cashTendered} onChange={(event) => setCashTendered(event.target.value)} /></label>}
+                  {paymentMode === "card" && <label>Autorización o referencia<input aria-label="Autorización o referencia" maxLength={80} value={cardReference} onChange={(event) => setCardReference(event.target.value)} /></label>}
+                  {paymentMode === "combined" && (
+                    <>
+                      <label>Parte en efectivo<input aria-label="Parte en efectivo" type="number" inputMode="decimal" min="0.01" step="0.01" value={combinedCashAmount} onChange={(event) => { setCombinedCashAmount(event.target.value); setCashTendered(event.target.value); }} /></label>
+                      <label>Efectivo recibido<input aria-label="Efectivo recibido" type="number" inputMode="decimal" min="0" step="0.01" value={cashTendered} onChange={(event) => setCashTendered(event.target.value)} /></label>
+                      <label>Autorización de tarjeta<input aria-label="Autorización de tarjeta" maxLength={80} value={cardReference} onChange={(event) => setCardReference(event.target.value)} /></label>
+                    </>
+                  )}
+                </section>
+
+                <div className="checkout-summary">
+                  <div><span>Cuenta</span><strong>{formatMoney(account.totalInCents)}</strong></div>
+                  <div><span>Propina</span><strong>{formatMoney(checkoutTipInCents)}</strong></div>
+                  {paymentMode === "combined" && <><div><span>Efectivo aplicado</span><span>{formatMoney(checkoutCombinedCashInCents)}</span></div><div><span>Tarjeta</span><span>{formatMoney(checkoutCardInCents + checkoutTipInCents)}</span></div></>}
+                  {paymentMode !== "card" && <div className="change-row"><span>Cambio</span><strong>{formatMoney(checkoutChangeInCents)}</strong></div>}
+                  <div className="checkout-total"><span>Total a registrar</span><strong>{formatMoney(account.totalInCents + checkoutTipInCents)}</strong></div>
+                </div>
+                <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setCheckoutOpen(false)}>Volver</button><button className="pay-confirm-button" type="button" disabled={busy} onClick={() => void capturePayment()}>{busy ? "Procesando…" : "Confirmar pago"}</button></div>
+              </>
+            ) : (
+              <>
+                <div className="modal-heading"><div><span className="eyebrow">{cashShiftContext.register.name}</span><h2 id="checkout-title">Abrir turno de caja</h2></div><button type="button" aria-label="Cerrar" onClick={() => setCheckoutOpen(false)}>×</button></div>
+                <p className="modal-help">El fondo inicial sirve para dar cambio y se registra separado de las ventas.</p>
+                {checkoutError && <p className="form-error" role="alert">{checkoutError}</p>}
+                <label className="checkout-input">Fondo inicial<input aria-label="Fondo inicial" type="number" inputMode="decimal" min="0" step="0.01" value={openingFloat} onChange={(event) => setOpeningFloat(event.target.value)} /></label>
+                <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setCheckoutOpen(false)}>Volver</button><button className="access-primary" type="button" disabled={busy} onClick={() => void openCashShift()}>{busy ? "Abriendo…" : "Abrir turno"}</button></div>
+              </>
+            )}
+          </section>
+        </div>
+      )}
+
+      {receipt && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal receipt-modal" role="dialog" aria-modal="true" aria-labelledby="receipt-title">
+            <div className="receipt-heading"><span className="brand-mark" aria-hidden="true">A</span><div><span className="eyebrow">Pago confirmado</span><h2 id="receipt-title">Ticket {receipt.folio}</h2></div></div>
+            <div className="receipt-meta"><strong>{serviceLabel(receipt.account)}</strong><span>{new Date(receipt.issuedAt).toLocaleString("es-MX")}</span><small>{receipt.shift.register.name}</small></div>
+            <div className="receipt-items">
+              {receipt.account.items.filter((item) => item.preparationState !== "cancelled").map((item) => <div key={item.id}><span>{item.quantity} × {item.productName}</span><strong>{formatMoney(item.lineTotalInCents)}</strong></div>)}
+            </div>
+            <div className="receipt-totals">
+              <div><span>Subtotal</span><span>{formatMoney(receipt.account.totals.subtotalInCents)}</span></div>
+              {receipt.account.totals.discountInCents > 0 && <div><span>Descuento</span><span>− {formatMoney(receipt.account.totals.discountInCents)}</span></div>}
+              <div><span>IVA</span><span>{formatMoney(receipt.account.totals.taxInCents)}</span></div>
+              <div><strong>Venta</strong><strong>{formatMoney(receipt.totals.saleInCents)}</strong></div>
+              {receipt.totals.tipInCents > 0 && <div><span>Propina</span><strong>{formatMoney(receipt.totals.tipInCents)}</strong></div>}
+            </div>
+            <div className="receipt-payments">
+              {receipt.payments.map((payment) => <div key={payment.id}><span>{payment.method.name}{payment.reference ? ` · ${payment.reference}` : ""}</span><strong>{formatMoney(payment.totalInCents)}</strong></div>)}
+              {receipt.totals.changeInCents > 0 && <div className="change-row"><span>Cambio</span><strong>{formatMoney(receipt.totals.changeInCents)}</strong></div>}
+            </div>
+            <div className="modal-actions single-action"><button className="access-primary" type="button" onClick={() => void closeReceipt()}>Cerrar ticket</button></div>
           </section>
         </div>
       )}

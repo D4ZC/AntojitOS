@@ -8,9 +8,11 @@ import { PermissionsGuard } from "./auth/permissions.guard.js";
 import { ConfigModule } from "./config/config.module.js";
 import { DatabaseModule } from "./database/database.module.js";
 import { CatalogModule } from "./catalog/catalog.module.js";
+import { CashModule } from "./cash/cash.module.js";
 import { EventsModule } from "./events/events.module.js";
 import { HealthModule } from "./health/health.module.js";
 import { ProductionModule } from "./production/production.module.js";
+import { SalesModule } from "./sales/sales.module.js";
 import { TerminalsModule } from "./terminals/terminals.module.js";
 
 @Module({
@@ -20,8 +22,10 @@ import { TerminalsModule } from "./terminals/terminals.module.js";
     ScheduleModule.forRoot(),
     AuthModule,
     CatalogModule,
+    CashModule,
     ProductionModule,
     AccountsModule,
+    SalesModule,
     EventsModule,
     HealthModule,
     TerminalsModule,
