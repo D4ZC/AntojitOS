@@ -821,6 +821,22 @@ h2 {
   margin-bottom: 22px;
 }
 
+.service-heading-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.cash-panel-button {
+  min-height: 54px;
+  padding: 0 20px;
+  border: 1px solid var(--forest);
+  border-radius: 16px;
+  color: white;
+  background: var(--forest);
+  font-weight: 800;
+}
+
 .guest-counter {
   display: flex;
   min-height: 54px;
@@ -891,6 +907,68 @@ h2 {
 .counter-services button > small {
   align-self: start;
   color: var(--muted);
+}
+
+.open-counter-section {
+  margin-bottom: 30px;
+  padding: 16px;
+  border: 1px solid #d8cba9;
+  border-radius: 20px;
+  background: #fff8e8;
+}
+
+.open-counter-section > div:first-child {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.open-counter-section h2 {
+  margin: 0;
+}
+
+.open-counter-section > div:first-child span {
+  padding: 5px 9px;
+  border-radius: 999px;
+  color: #74551d;
+  background: #f4dfae;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.open-counter-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 10px;
+}
+
+.open-counter-grid button {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  min-height: 76px;
+  align-items: center;
+  gap: 4px 10px;
+  padding: 11px 13px;
+  border: 1px solid #ddc88d;
+  border-radius: 15px;
+  background: white;
+  text-align: left;
+}
+
+.open-counter-grid button > span {
+  grid-row: 1 / 3;
+  font-size: 24px;
+}
+
+.open-counter-grid button > small {
+  color: var(--muted);
+}
+
+.open-counter-grid button > b {
+  grid-column: 3;
+  grid-row: 1 / 3;
 }
 
 .area-section {
@@ -1106,6 +1184,12 @@ h2 {
   border-color: var(--forest);
   color: white;
   background: var(--forest);
+}
+
+.modal-actions > button.danger-button {
+  border-color: #a9402e;
+  color: white;
+  background: #b94733;
 }
 
 .modal-actions.single-action {
@@ -1528,6 +1612,234 @@ h2 {
   resize: vertical;
 }
 
+.nested-backdrop {
+  z-index: 30;
+  background: rgba(13, 31, 27, 0.76);
+}
+
+.cash-panel-modal {
+  width: min(100%, 980px);
+}
+
+.cash-panel-content {
+  display: grid;
+  gap: 18px;
+}
+
+.cash-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  gap: 10px;
+}
+
+.cash-summary-grid > div,
+.cash-declaration-results > div {
+  display: grid;
+  gap: 5px;
+  min-height: 104px;
+  align-content: center;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  background: white;
+}
+
+.cash-summary-grid span,
+.cash-summary-grid small,
+.cash-declaration-results small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.cash-summary-grid strong {
+  font-size: 22px;
+}
+
+.cash-panel-section,
+.cash-open-panel,
+.cash-close-result {
+  padding: 17px;
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  background: #f8f5ee;
+}
+
+.cash-panel-section h3,
+.cash-open-panel h3,
+.cash-close-result h3 {
+  margin: 0 0 10px;
+}
+
+.cash-panel-section > p,
+.cash-open-panel > p,
+.cash-close-result > p {
+  margin: 0 0 14px;
+  color: var(--muted);
+}
+
+.cash-method-list {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 8px;
+}
+
+.cash-method-list > div {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 13px;
+  border: 1px solid var(--line);
+  border-radius: 13px;
+  background: white;
+}
+
+.cash-movement-form {
+  display: grid;
+  grid-template-columns: 1fr 0.8fr 1.5fr auto;
+  align-items: end;
+  gap: 10px;
+}
+
+.cash-direction-options {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.cash-direction-options button,
+.cash-movement-form > button,
+.cash-receipt-actions button {
+  min-height: 48px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: white;
+  font-weight: 800;
+}
+
+.cash-direction-options button.selected {
+  color: white;
+  border-color: var(--forest);
+  background: var(--forest);
+}
+
+.cash-movement-form label,
+.cash-declaration-grid label,
+.cash-open-panel label {
+  display: grid;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.cash-movement-form input,
+.cash-declaration-grid input,
+.cash-open-panel input {
+  min-height: 48px;
+  padding: 9px 11px;
+  border: 1px solid #cec9be;
+  border-radius: 12px;
+  background: white;
+  font: inherit;
+}
+
+.cash-open-panel {
+  display: grid;
+  max-width: 520px;
+  gap: 12px;
+  margin: 0 auto;
+}
+
+.cash-receipt-list {
+  display: grid;
+  gap: 8px;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.cash-receipt-list article {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) auto auto;
+  align-items: center;
+  gap: 12px;
+  padding: 11px;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: white;
+}
+
+.cash-receipt-list article > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.cash-receipt-list article small {
+  color: var(--muted);
+}
+
+.cash-receipt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.cash-receipt-actions .danger-button {
+  color: white;
+  background: #b93f2f;
+}
+
+.cash-declaration-grid,
+.cash-declaration-results {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(150px, 1fr));
+  gap: 9px;
+  margin-bottom: 14px;
+}
+
+.cash-close-section {
+  border-color: #dfb8ae;
+  background: #fff8f5;
+}
+
+.cash-close-button {
+  width: 100%;
+}
+
+.cash-close-result {
+  display: grid;
+  gap: 12px;
+  text-align: center;
+}
+
+.success-mark {
+  display: grid;
+  width: 64px;
+  height: 64px;
+  place-items: center;
+  margin: 0 auto;
+  border-radius: 50%;
+  color: white;
+  background: var(--forest);
+  font-size: 34px;
+  font-weight: 900;
+}
+
+.cash-declaration-results {
+  text-align: left;
+}
+
+.cash-declaration-results .balanced {
+  color: #277056;
+}
+
+.cash-declaration-results .difference {
+  color: #a43c2d;
+  font-weight: 800;
+}
+
 .kds-access {
   background:
     radial-gradient(circle at 85% 8%, rgba(230, 95, 68, 0.28), transparent 28%),
@@ -1894,8 +2206,38 @@ h2 {
     align-items: flex-start;
   }
 
+  .service-heading-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .cash-summary-grid {
+    grid-template-columns: repeat(2, minmax(140px, 1fr));
+  }
+
+  .cash-movement-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .cash-receipt-list article {
+    grid-template-columns: 1fr auto;
+  }
+
+  .cash-receipt-actions {
+    grid-column: 1 / -1;
+    justify-content: stretch;
+  }
+
+  .cash-receipt-actions button {
+    flex: 1;
+  }
+
   .table-grid {
     grid-template-columns: repeat(2, minmax(130px, 1fr));
+  }
+
+  .open-counter-grid {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
   }
 
   .service-context {
@@ -1978,8 +2320,20 @@ h2 {
     grid-template-columns: 1fr;
   }
 
+  .open-counter-grid {
+    grid-template-columns: 1fr;
+  }
+
   .guest-counter {
     width: fit-content;
+  }
+
+  .cash-summary-grid,
+  .cash-method-list,
+  .cash-movement-form,
+  .cash-declaration-grid,
+  .cash-declaration-results {
+    grid-template-columns: 1fr;
   }
 
   .table-grid {

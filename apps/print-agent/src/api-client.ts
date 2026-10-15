@@ -21,6 +21,7 @@ export class ProductionAgentApi {
       code: string;
       displayName: string;
       centerCodes: string[];
+      registerCodes: string[];
     },
   ): Promise<AgentCredentials> {
     const response = await fetch(`${baseUrl}/v1/production-agents/register`, {

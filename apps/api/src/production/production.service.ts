@@ -89,8 +89,16 @@ interface AgentRow extends DatabaseRow {
 interface PrintJobRow extends DatabaseRow {
   id: string;
   site_id: string;
-  ticket_id: string;
-  kind: "addition" | "cancellation" | "reprint";
+  ticket_id: string | null;
+  receipt_id: string | null;
+  shift_close_id: string | null;
+  kind:
+    | "addition"
+    | "cancellation"
+    | "reprint"
+    | "receipt"
+    | "receipt_reprint"
+    | "shift_close";
   status: "queued" | "claimed" | "completed" | "failed" | "cancelled";
   payload: Record<string, unknown> | string;
   attempts: number;
@@ -597,6 +605,15 @@ export class ProductionService {
       if (centersResult.rows.length !== new Set(input.centerCodes).size) {
         throw new BadRequestException("Uno o más centros de producción no existen");
       }
+      const registerCodes = [...new Set(input.registerCodes ?? [])];
+      const registersResult = await transaction.query<{ id: string; code: string }>(
+        `SELECT id, code FROM cash_registers
+          WHERE site_id = $1 AND code = ANY($2::text[]) AND active`,
+        [siteId, registerCodes],
+      );
+      if (registersResult.rows.length !== registerCodes.length) {
+        throw new BadRequestException("Una o más cajas no existen");
+      }
       try {
         await transaction.query(
           `INSERT INTO production_agents (
@@ -617,19 +634,31 @@ export class ProductionService {
           [agentId, center.id],
         );
       }
+      for (const register of registersResult.rows) {
+        await transaction.query(
+          `INSERT INTO production_agent_registers (agent_id, register_id)
+           VALUES ($1, $2)`,
+          [agentId, register.id],
+        );
+      }
       await this.audit.append(transaction, {
         id: randomUUID(),
         siteId,
         action: "production.agent.registered",
         entityType: "production_agent",
         entityId: agentId,
-        changes: { code: input.code, centerCodes: input.centerCodes },
+        changes: {
+          code: input.code,
+          centerCodes: input.centerCodes,
+          registerCodes,
+        },
       });
       return {
         id: agentId,
         code: input.code,
         displayName: input.displayName,
         centerCodes: input.centerCodes,
+        registerCodes,
         token,
       };
     });
@@ -665,15 +694,32 @@ export class ProductionService {
       const candidateResult = await transaction.query<PrintJobRow>(
         `SELECT jobs.*
            FROM print_jobs jobs
-           JOIN production_tickets tickets ON tickets.id = jobs.ticket_id
-           JOIN production_agent_centers assignments
-             ON assignments.production_center_id = tickets.production_center_id
-          WHERE jobs.site_id = $1 AND assignments.agent_id = $2
+           LEFT JOIN production_tickets tickets ON tickets.id = jobs.ticket_id
+           LEFT JOIN production_agent_centers center_assignments
+             ON center_assignments.production_center_id = tickets.production_center_id
+            AND center_assignments.agent_id = $2
+           LEFT JOIN sales_receipts receipts ON receipts.id = jobs.receipt_id
+           LEFT JOIN cash_shifts receipt_shifts ON receipt_shifts.id = receipts.shift_id
+           LEFT JOIN cash_shift_closes closes ON closes.id = jobs.shift_close_id
+           LEFT JOIN cash_shifts close_shifts ON close_shifts.id = closes.shift_id
+           LEFT JOIN production_agent_registers register_assignments
+             ON register_assignments.agent_id = $2
+            AND register_assignments.register_id = COALESCE(
+              receipt_shifts.register_id,
+              close_shifts.register_id
+            )
+          WHERE jobs.site_id = $1
             AND jobs.status = 'queued' AND jobs.available_at <= now()
             AND jobs.attempts < jobs.max_attempts
+            AND (
+              (jobs.ticket_id IS NOT NULL AND center_assignments.agent_id IS NOT NULL)
+              OR
+              ((jobs.receipt_id IS NOT NULL OR jobs.shift_close_id IS NOT NULL)
+                AND register_assignments.agent_id IS NOT NULL)
+            )
           ORDER BY jobs.created_at, jobs.id
           LIMIT 1
-          FOR UPDATE SKIP LOCKED`,
+          FOR UPDATE OF jobs SKIP LOCKED`,
         [agent.site_id, agent.id],
       );
       const job = candidateResult.rows[0];
@@ -703,6 +749,8 @@ export class ProductionService {
         job: {
           id: job.id,
           ticketId: job.ticket_id,
+          receiptId: job.receipt_id,
+          shiftCloseId: job.shift_close_id,
           kind: job.kind,
           attempt: attemptNumber,
           claimToken,

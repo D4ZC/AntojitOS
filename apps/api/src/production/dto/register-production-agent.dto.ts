@@ -4,6 +4,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsNotEmpty,
+  IsOptional,
   IsString,
   Matches,
   MaxLength,
@@ -33,4 +34,12 @@ export class RegisterProductionAgentDto {
   @IsString({ each: true })
   @Matches(/^[A-Z0-9_-]{2,24}$/, { each: true })
   centerCodes!: string[];
+
+  @ApiProperty({ type: [String], example: ["MAIN"], required: false })
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(20)
+  @IsString({ each: true })
+  @Matches(/^[A-Z0-9_-]{2,24}$/, { each: true })
+  registerCodes?: string[];
 }

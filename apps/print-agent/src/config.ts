@@ -23,6 +23,7 @@ export interface AgentConfig {
   code: string;
   displayName: string;
   centerCodes: string[];
+  registerCodes: string[];
   bootstrapToken?: string;
   agentId?: string;
   agentToken?: string;
@@ -44,6 +45,10 @@ export const readConfig = (): AgentConfig => {
     .map((value) => value.trim().toUpperCase())
     .filter(Boolean);
   if (centerCodes.length === 0) throw new Error("Se requiere al menos un centro de producción");
+  const registerCodes = (process.env.PRINT_AGENT_REGISTERS ?? "MAIN")
+    .split(",")
+    .map((value) => value.trim().toUpperCase())
+    .filter(Boolean);
   const printerHost = process.env.PRINTER_HOST;
   if (mode === "tcp" && !printerHost) throw new Error("PRINTER_HOST es obligatorio en modo tcp");
 
@@ -54,6 +59,7 @@ export const readConfig = (): AgentConfig => {
     code: (process.env.PRINT_AGENT_CODE ?? "PRINT-01").toUpperCase(),
     displayName: process.env.PRINT_AGENT_NAME ?? "Agente de impresión principal",
     centerCodes,
+    registerCodes,
     bootstrapToken: process.env.BOOTSTRAP_TOKEN,
     agentId: process.env.PRINT_AGENT_ID,
     agentToken: process.env.PRINT_AGENT_TOKEN,

@@ -12,6 +12,8 @@ import { ApiBearerAuth, ApiHeader, ApiTags } from "@nestjs/swagger";
 import type { RequestWithAuth } from "../security/auth-context.js";
 import { RequirePermissions } from "../security/permissions.decorator.js";
 import { CashService } from "./cash.service.js";
+import { CloseCashShiftDto } from "./dto/close-cash-shift.dto.js";
+import { CreateCashMovementDto } from "./dto/create-cash-movement.dto.js";
 import { OpenCashShiftDto } from "./dto/open-cash-shift.dto.js";
 
 const requireIdempotencyKey = (key: string | undefined): string => {
@@ -33,6 +35,12 @@ export class CashController {
     return this.cash.currentShift(request.auth);
   }
 
+  @Get("shifts/current/report")
+  @RequirePermissions("cash.shift.preview")
+  currentReport(@Req() request: RequestWithAuth) {
+    return this.cash.currentReport(request.auth);
+  }
+
   @Post("shifts")
   @ApiHeader({ name: "idempotency-key", required: true })
   @RequirePermissions("cash.shift.open")
@@ -42,6 +50,38 @@ export class CashController {
     @Req() request: RequestWithAuth,
   ) {
     const result = await this.cash.openShift(
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post("shifts/current/movements")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("cash.movement.create")
+  async createMovement(
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: CreateCashMovementDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.cash.createMovement(
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Post("shifts/current/close")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("cash.shift.close")
+  async closeShift(
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: CloseCashShiftDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.cash.closeShift(
       input,
       requireIdempotencyKey(key),
       request.auth,

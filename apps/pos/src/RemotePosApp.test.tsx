@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { RemotePosApp, type RemoteApi } from "./RemotePosApp";
 import type {
   CashShiftContext,
+  CashShiftReport,
   CatalogCategory,
   PaymentMethod,
   SalesReceipt,
@@ -30,8 +31,13 @@ const session: Session = {
       "service.precheck.create",
       "cash.shift.read",
       "cash.shift.open",
+      "cash.shift.preview",
+      "cash.shift.close",
+      "cash.movement.create",
       "sales.payment.capture",
       "sales.receipt.read",
+      "sales.receipt.reprint",
+      "sales.refund.create",
     ],
   },
 };
@@ -188,6 +194,37 @@ const paidReceipt: SalesReceipt = {
   },
 };
 
+const cashReport: CashShiftReport = {
+  register: cashShiftContext.register,
+  shift: cashShiftContext.shift!,
+  sales: {
+    receiptCount: 1,
+    refundCount: 0,
+    subtotalInCents: 3621,
+    discountInCents: 0,
+    taxInCents: 579,
+    grossSaleInCents: 4200,
+    refundedSaleInCents: 0,
+    netSaleInCents: 4200,
+    tipInCents: 420,
+    refundedTipInCents: 0,
+    averageTicketInCents: 4200,
+  },
+  paymentMethods: paymentMethods.map((method) => ({
+    id: method.id,
+    code: method.code,
+    name: method.name,
+    saleInCents: method.code === "CASH" ? 4200 : 0,
+    tipInCents: method.code === "CASH" ? 420 : 0,
+    refundedSaleInCents: 0,
+    refundedTipInCents: 0,
+    netInCents: method.code === "CASH" ? 4620 : 0,
+  })),
+  cash: { totalInCents: 54_620, totalOutCents: 0, theoreticalInCents: 54_620 },
+  movements: [],
+  openAccountCount: 0,
+};
+
 const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   setAccessToken: vi.fn(),
   registerTerminal: vi.fn().mockResolvedValue(terminal),
@@ -197,6 +234,7 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   openAccount: vi.fn().mockResolvedValue({ id: "account-1" }),
   account: vi.fn().mockResolvedValue(emptyAccount),
   tableAccounts: vi.fn().mockResolvedValue([]),
+  openCounterAccounts: vi.fn().mockResolvedValue([]),
   accountManagementOptions: vi.fn().mockResolvedValue({
     users: [{ id: "user-1", displayName: "Administrador" }],
     tables: [{ id: "table-1", name: "Mesa 1" }],
@@ -204,8 +242,33 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   }),
   currentCashShift: vi.fn().mockResolvedValue(cashShiftContext),
   openCashShift: vi.fn().mockResolvedValue(cashShiftContext),
+  currentCashReport: vi.fn().mockResolvedValue(cashReport),
+  createCashMovement: vi.fn().mockResolvedValue({ id: "movement-1" }),
+  closeCashShift: vi.fn().mockResolvedValue({
+    id: "close-1",
+    status: "closed",
+    closedAt: "2030-01-01T13:00:00.000Z",
+    report: cashReport,
+    declarations: cashReport.paymentMethods.map((method) => ({
+      method: { id: method.id, code: method.code, name: method.name },
+      theoreticalInCents: method.code === "CASH" ? 54_620 : method.netInCents,
+      declaredInCents: method.code === "CASH" ? 54_620 : method.netInCents,
+      differenceInCents: 0,
+    })),
+  }),
   paymentMethods: vi.fn().mockResolvedValue(paymentMethods),
   checkoutAccount: vi.fn().mockResolvedValue(paidReceipt),
+  recentReceipts: vi.fn().mockResolvedValue([{
+    id: paidReceipt.id,
+    folio: paidReceipt.folio,
+    status: "issued",
+    totalInCents: paidReceipt.totals.saleInCents,
+    tipInCents: paidReceipt.totals.tipInCents,
+    issuedAt: paidReceipt.issuedAt,
+    accountLabel: "Mesa 1",
+  }]),
+  reprintReceipt: vi.fn().mockResolvedValue({ jobId: "job-1" }),
+  refundReceipt: vi.fn().mockResolvedValue({ id: "refund-1" }),
   createPrecheck: vi.fn().mockResolvedValue({
     id: "precheck-1",
     sequence: 1,
@@ -278,6 +341,40 @@ describe("POS conectado", () => {
       guestCount: 2,
     });
     expect(screen.getByRole("button", { name: /agregar quesadilla/i })).toBeInTheDocument();
+  });
+
+  it("permite recuperar un servicio sin mesa que quedó abierto", async () => {
+    storeTerminal();
+    const quickAccount: ServiceAccount = {
+      ...emptyAccount,
+      id: "quick-account-1",
+      tableId: null,
+      tableName: null,
+      serviceType: "quick",
+      guestCount: 1,
+    };
+    const api = createApi({
+      openCounterAccounts: vi.fn().mockResolvedValue([{
+        id: quickAccount.id,
+        label: "Venta rápida",
+        serviceType: "quick",
+        sequence: 1,
+        version: 0,
+        responsible: quickAccount.responsible,
+        itemCount: 0,
+        totalInCents: 0,
+        openedAt: "2030-01-01T10:00:00.000Z",
+      }]),
+      account: vi.fn().mockResolvedValue(quickAccount),
+    });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+
+    fireEvent.click(await screen.findByRole("button", { name: "Abrir Venta rápida 1" }));
+
+    expect(await screen.findByRole("heading", { name: "Venta rápida" })).toBeInTheDocument();
+    expect(api.account).toHaveBeenCalledWith("quick-account-1");
   });
 
   it("agrega un producto y envía la ronda al servidor", async () => {
@@ -432,5 +529,43 @@ describe("POS conectado", () => {
 
     await waitFor(() => expect(api.openCashShift).toHaveBeenCalledWith(75_000));
     expect(await screen.findByRole("heading", { name: "Cobrar Mesa 1" })).toBeInTheDocument();
+  });
+
+  it("registra movimientos, reimprime y cierra el turno desde la pantalla táctil", async () => {
+    storeTerminal();
+    const api = createApi();
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Caja y corte" }));
+
+    expect(await screen.findByRole("heading", { name: "Caja y corte" })).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Importe del movimiento"), {
+      target: { value: "100.00" },
+    });
+    fireEvent.change(screen.getByLabelText("Motivo del movimiento"), {
+      target: { value: "Compra de emergencia" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Registrar movimiento" }));
+    await waitFor(() => expect(api.createCashMovement).toHaveBeenCalledWith({
+      direction: "out",
+      amountInCents: 10_000,
+      reason: "Compra de emergencia",
+    }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Reimprimir" }));
+    fireEvent.change(screen.getByLabelText("Motivo de la acción sobre el ticket"), {
+      target: { value: "Cliente solicita copia" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    await waitFor(() => expect(api.reprintReceipt).toHaveBeenCalledWith(
+      "receipt-1",
+      "Cliente solicita copia",
+    ));
+
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar turno de caja" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
+    await waitFor(() => expect(api.closeCashShift).toHaveBeenCalled());
+    expect(await screen.findByRole("heading", { name: "Turno cerrado" })).toBeInTheDocument();
   });
 });

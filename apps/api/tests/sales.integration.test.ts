@@ -34,7 +34,7 @@ const createServices = (database: TestDatabase) => {
   const accounts = new AccountsService(database, audit, idempotency, outbox, production);
   const cash = new CashService(database, audit, idempotency, outbox);
   const sales = new SalesService(database, accounts, cash, audit, idempotency, outbox);
-  return { accounts, cash, sales };
+  return { accounts, cash, production, sales };
 };
 
 let database: TestDatabase | undefined;
@@ -79,7 +79,7 @@ describe("cobro y turno de caja", () => {
 
   it("cobra una cuenta con efectivo y tarjeta, registra propina/cambio y libera la mesa", async () => {
     database = await createServiceFixture();
-    const { accounts, cash, sales } = createServices(database);
+    const { accounts, cash, production, sales } = createServices(database);
     const catalog = new CatalogService(database);
     const terminal = actor();
     await cash.openShift({ openingFloatInCents: 0 }, "open-for-sales", terminal);
@@ -206,5 +206,119 @@ describe("cobro y turno de caja", () => {
       "SELECT amount_in_cents FROM cash_movements WHERE type = 'sale'",
     );
     expect(cashMovement.rows[0]?.amount_in_cents).toBe(1_000);
+
+    const preliminary = await cash.currentReport(terminal);
+    expect(preliminary).toMatchObject({
+      sales: {
+        receiptCount: 1,
+        grossSaleInCents: 3_000,
+        netSaleInCents: 3_000,
+      },
+      cash: { theoreticalInCents: 1_000 },
+      openAccountCount: 0,
+    });
+    await cash.createMovement(
+      { direction: "in", amountInCents: 500, reason: "Cambio adicional" },
+      "cash-in",
+      terminal,
+    );
+    await cash.createMovement(
+      { direction: "out", amountInCents: 200, reason: "Compra urgente" },
+      "cash-out",
+      terminal,
+    );
+    const reprint = await sales.reprintReceipt(
+      receipt.body.id,
+      { reason: "Cliente solicita copia" },
+      "receipt-copy",
+      terminal,
+    );
+    expect(reprint.body.status).toBe("queued");
+
+    const refunded = await sales.refundReceipt(
+      receipt.body.id,
+      { kind: "refund", reason: "Producto devuelto" },
+      "refund-ticket",
+      terminal,
+    );
+    const refundReplay = await sales.refundReceipt(
+      receipt.body.id,
+      { kind: "refund", reason: "Producto devuelto" },
+      "refund-ticket",
+      terminal,
+    );
+    expect(refunded.body).toMatchObject({
+      folio: "T-000001",
+      saleInCents: 3_000,
+      tipInCents: 300,
+    });
+    expect(refundReplay.replayed).toBe(true);
+    await expect(
+      sales.refundReceipt(
+        receipt.body.id,
+        { kind: "refund", reason: "Intento duplicado" },
+        "refund-ticket-again",
+        terminal,
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+
+    const adjusted = await cash.currentReport(terminal);
+    expect(adjusted).toMatchObject({
+      sales: {
+        refundCount: 1,
+        refundedSaleInCents: 3_000,
+        netSaleInCents: 0,
+      },
+      cash: { theoreticalInCents: 300 },
+    });
+    const closed = await cash.closeShift(
+      {
+        expectedVersion: 0,
+        declarations: [
+          { methodCode: "CASH", declaredInCents: 300 },
+          { methodCode: "CARD", declaredInCents: 0 },
+          { methodCode: "TRANSFER", declaredInCents: 0 },
+        ],
+      },
+      "close-shift",
+      terminal,
+    );
+    expect(closed.body).toMatchObject({
+      status: "closed",
+      declarations: [
+        expect.objectContaining({ differenceInCents: 0 }),
+        expect.objectContaining({ differenceInCents: 0 }),
+        expect.objectContaining({ differenceInCents: 0 }),
+      ],
+    });
+    expect((await cash.currentShift(terminal)).shift).toBeNull();
+    expect((await database.query("SELECT id FROM cash_shift_closes")).rowCount).toBe(1);
+    expect((await database.query("SELECT id FROM print_jobs")).rowCount).toBe(4);
+
+    const agent = await production.registerAgent({
+      siteCode: "PILOT",
+      code: "PRINT-SALES",
+      displayName: "Impresora de caja",
+      centerCodes: ["KITCHEN"],
+      registerCodes: ["MAIN"],
+    });
+    const printedKinds: string[] = [];
+    for (let index = 0; index < 4; index += 1) {
+      const claimed = await production.claimJob(agent.id, agent.token);
+      expect(claimed.job).not.toBeNull();
+      printedKinds.push(claimed.job!.kind);
+      await production.completeJob(
+        claimed.job!.id,
+        claimed.job!.claimToken,
+        agent.id,
+        agent.token,
+      );
+    }
+    expect(printedKinds).toEqual([
+      "addition",
+      "receipt",
+      "receipt_reprint",
+      "shift_close",
+    ]);
   });
 });

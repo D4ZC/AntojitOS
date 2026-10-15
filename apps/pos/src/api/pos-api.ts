@@ -2,9 +2,12 @@ import { createUuid } from "@antojit-os/domain";
 import type {
   AccountManagementOptions,
   AccountSummary,
+  CashShiftClose,
   CashShiftContext,
+  CashShiftReport,
   CatalogCategory,
   CheckoutPayment,
+  OpenCounterAccount,
   PaymentMethod,
   Precheck,
   ProductionTicket,
@@ -12,6 +15,7 @@ import type {
   ServiceLayout,
   Session,
   SalesReceipt,
+  SalesReceiptSummary,
   TerminalCredentials,
 } from "./types";
 
@@ -119,6 +123,13 @@ export class PosApi {
     return result.accounts;
   }
 
+  async openCounterAccounts(): Promise<OpenCounterAccount[]> {
+    const result = await this.request<{ accounts: OpenCounterAccount[] }>(
+      "/v1/accounts/open-counter",
+    );
+    return result.accounts;
+  }
+
   accountManagementOptions(accountId: string): Promise<AccountManagementOptions> {
     return this.request(`/v1/accounts/${accountId}/management-options`);
   }
@@ -132,6 +143,36 @@ export class PosApi {
       method: "POST",
       idempotencyKey: this.createIdempotencyKey(),
       body: { openingFloatInCents },
+    });
+  }
+
+  currentCashReport(): Promise<CashShiftReport> {
+    return this.request("/v1/cash/shifts/current/report");
+  }
+
+  createCashMovement(input: {
+    direction: "in" | "out";
+    amountInCents: number;
+    reason: string;
+  }): Promise<{ id: string }> {
+    return this.request("/v1/cash/shifts/current/movements", {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  closeCashShift(input: {
+    expectedVersion: number;
+    declarations: Array<{
+      methodCode: "CASH" | "CARD" | "TRANSFER";
+      declaredInCents: number;
+    }>;
+  }): Promise<CashShiftClose> {
+    return this.request("/v1/cash/shifts/current/close", {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
     });
   }
 
@@ -155,6 +196,32 @@ export class PosApi {
 
   receipt(receiptId: string): Promise<SalesReceipt> {
     return this.request(`/v1/sales/receipts/${receiptId}`);
+  }
+
+  async recentReceipts(): Promise<SalesReceiptSummary[]> {
+    const result = await this.request<{ receipts: SalesReceiptSummary[] }>(
+      "/v1/sales/receipts",
+    );
+    return result.receipts;
+  }
+
+  reprintReceipt(receiptId: string, reason: string): Promise<{ jobId: string }> {
+    return this.request(`/v1/sales/receipts/${receiptId}/reprints`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: { reason },
+    });
+  }
+
+  refundReceipt(
+    receiptId: string,
+    input: { kind: "cancellation" | "refund"; reason: string },
+  ): Promise<{ id: string }> {
+    return this.request(`/v1/sales/receipts/${receiptId}/refunds`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
   }
 
   createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck> {

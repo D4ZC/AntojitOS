@@ -22,6 +22,8 @@ import type {
   CheckoutAccountDto,
   CheckoutTenderDto,
 } from "./dto/checkout-account.dto.js";
+import type { RefundReceiptDto } from "./dto/refund-receipt.dto.js";
+import type { ReprintReceiptDto } from "./dto/reprint-receipt.dto.js";
 
 interface PaymentMethodRow extends DatabaseRow {
   id: string;
@@ -46,6 +48,35 @@ interface SequenceRow extends DatabaseRow {
 
 interface ReceiptRow extends DatabaseRow {
   snapshot: unknown;
+}
+
+interface ReceiptSummaryRow extends DatabaseRow {
+  id: string;
+  folio: string;
+  status: "issued" | "cancelled" | "refunded";
+  total_in_cents: number;
+  tip_in_cents: number;
+  issued_at: Date | string;
+  account_label: string;
+}
+
+interface RefundableReceiptRow extends DatabaseRow {
+  id: string;
+  shift_id: string;
+  folio: string;
+  status: "issued" | "cancelled" | "refunded";
+  total_in_cents: number;
+  tip_in_cents: number;
+  snapshot: unknown;
+}
+
+interface RefundPaymentRow extends DatabaseRow {
+  id: string;
+  payment_method_id: string;
+  method_code: "CASH" | "CARD" | "TRANSFER";
+  method_name: string;
+  sale_in_cents: number | string;
+  tip_in_cents: number | string;
 }
 
 interface ValidatedTender {
@@ -98,6 +129,271 @@ export class SalesService {
     const receipt = result.rows[0]?.snapshot;
     if (!receipt) throw new NotFoundException("Ticket inexistente");
     return receipt;
+  }
+
+  async recentReceipts(actor: AuthContext) {
+    const result = await this.database.query<ReceiptSummaryRow>(
+      `SELECT receipts.id, receipts.folio, receipts.status,
+              receipts.total_in_cents, receipts.tip_in_cents, receipts.issued_at,
+              COALESCE(tables.name, accounts.reference,
+                CASE accounts.service_type
+                  WHEN 'takeaway' THEN 'Para llevar'
+                  ELSE 'Venta rápida'
+                END
+              ) AS account_label
+         FROM sales_receipts receipts
+         JOIN service_accounts accounts ON accounts.id = receipts.account_id
+         LEFT JOIN service_tables tables ON tables.id = accounts.table_id
+        WHERE receipts.site_id = $1
+        ORDER BY receipts.issued_at DESC, receipts.id DESC
+        LIMIT 30`,
+      [actor.siteId],
+    );
+    return {
+      receipts: result.rows.map((receipt) => ({
+        id: receipt.id,
+        folio: receipt.folio,
+        status: receipt.status,
+        totalInCents: receipt.total_in_cents,
+        tipInCents: receipt.tip_in_cents,
+        issuedAt: new Date(receipt.issued_at).toISOString(),
+        accountLabel: receipt.account_label,
+      })),
+    };
+  }
+
+  reprintReceipt(
+    receiptId: string,
+    input: ReprintReceiptDto,
+    key: string,
+    actor: AuthContext,
+  ) {
+    return this.idempotency.execute(
+      {
+        siteId: actor.siteId,
+        scope: `sales.receipt.reprint:${receiptId}`,
+        key,
+        requestHash: requestHash(input),
+      },
+      async (transaction) => {
+        const receiptResult = await transaction.query<ReceiptRow>(
+          `SELECT snapshot FROM sales_receipts
+            WHERE id = $1 AND site_id = $2`,
+          [receiptId, actor.siteId],
+        );
+        const snapshot = receiptResult.rows[0]?.snapshot;
+        if (!snapshot) throw new NotFoundException("Ticket inexistente");
+        const jobId = randomUUID();
+        const reason = input.reason.trim();
+        await transaction.query(
+          `INSERT INTO print_jobs (
+             id, site_id, receipt_id, kind, payload
+           ) VALUES ($1, $2, $3, 'receipt_reprint', $4::jsonb)`,
+          [
+            jobId,
+            actor.siteId,
+            receiptId,
+            JSON.stringify({
+              kind: "receipt_reprint",
+              receipt: snapshot,
+              reprint: { reason, requestedBy: actor.displayName },
+            }),
+          ],
+        );
+        const body = { jobId, receiptId, status: "queued" as const };
+        await this.audit.append(transaction, {
+          id: randomUUID(),
+          siteId: actor.siteId,
+          actorUserId: actor.userId,
+          terminalId: actor.terminalId,
+          action: "sales.receipt.reprint_requested",
+          entityType: "sales_receipt",
+          entityId: receiptId,
+          changes: { ...body, reason },
+        });
+        await this.outbox.enqueue(transaction, {
+          id: randomUUID(),
+          siteId: actor.siteId,
+          eventType: "sales.receipt.reprint_requested",
+          aggregateType: "sales_receipt",
+          aggregateId: receiptId,
+          payload: body,
+        });
+        return { status: 201, body };
+      },
+    );
+  }
+
+  refundReceipt(
+    receiptId: string,
+    input: RefundReceiptDto,
+    key: string,
+    actor: AuthContext,
+  ) {
+    return this.idempotency.execute(
+      {
+        siteId: actor.siteId,
+        scope: `sales.receipt.refund:${receiptId}`,
+        key,
+        requestHash: requestHash(input),
+      },
+      async (transaction) => {
+        const receiptResult = await transaction.query<RefundableReceiptRow>(
+          `SELECT id, shift_id, folio, status, total_in_cents,
+                  tip_in_cents, snapshot
+             FROM sales_receipts
+            WHERE id = $1 AND site_id = $2
+            FOR UPDATE`,
+          [receiptId, actor.siteId],
+        );
+        const receipt = receiptResult.rows[0];
+        if (!receipt) throw new NotFoundException("Ticket inexistente");
+        if (receipt.status !== "issued") {
+          throw new ConflictException("El ticket ya fue cancelado o devuelto");
+        }
+        const shift = await this.cash.lockOpenShift(transaction, actor.siteId);
+        const payments = await transaction.query<RefundPaymentRow>(
+          `SELECT payments.id, payments.payment_method_id,
+                  methods.code AS method_code, methods.name AS method_name,
+                  allocations.amount_in_cents AS sale_in_cents,
+                  COALESCE(tips.amount_in_cents, 0) AS tip_in_cents
+             FROM payments
+             JOIN payment_methods methods ON methods.id = payments.payment_method_id
+             JOIN payment_allocations allocations ON allocations.payment_id = payments.id
+             LEFT JOIN payment_tips tips ON tips.payment_id = payments.id
+            WHERE payments.receipt_id = $1 AND payments.site_id = $2
+            ORDER BY methods.display_order, payments.id
+            FOR UPDATE OF payments`,
+          [receiptId, actor.siteId],
+        );
+        if (payments.rowCount === 0) {
+          throw new ConflictException("El ticket no tiene pagos para devolver");
+        }
+        const reason = input.reason.trim();
+        const refundId = randomUUID();
+        const createdAt = new Date().toISOString();
+        const paymentSnapshots = payments.rows.map((payment) => {
+          const saleInCents = Number(payment.sale_in_cents);
+          const tipInCents = Number(payment.tip_in_cents);
+          return {
+            paymentId: payment.id,
+            method: { code: payment.method_code, name: payment.method_name },
+            saleInCents,
+            tipInCents,
+            totalInCents: saleInCents + tipInCents,
+          };
+        });
+        const body = {
+          id: refundId,
+          receiptId,
+          folio: receipt.folio,
+          kind: input.kind,
+          reason,
+          createdAt,
+          shiftId: shift.id,
+          saleInCents: receipt.total_in_cents,
+          tipInCents: receipt.tip_in_cents,
+          payments: paymentSnapshots,
+        };
+        await transaction.query(
+          `INSERT INTO sales_refunds (
+             id, site_id, receipt_id, shift_id, kind, sale_in_cents,
+             tip_in_cents, reason, snapshot, created_by_user_id,
+             created_on_terminal_id, created_at
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb, $10, $11, $12)`,
+          [
+            refundId,
+            actor.siteId,
+            receiptId,
+            shift.id,
+            input.kind,
+            receipt.total_in_cents,
+            receipt.tip_in_cents,
+            reason,
+            JSON.stringify({ refund: body, originalReceipt: receipt.snapshot }),
+            actor.userId,
+            actor.terminalId,
+            createdAt,
+          ],
+        );
+        for (const [index, payment] of payments.rows.entries()) {
+          const snapshot = paymentSnapshots[index]!;
+          await transaction.query(
+            `INSERT INTO refund_payments (
+               id, site_id, refund_id, payment_id, payment_method_id,
+               sale_in_cents, tip_in_cents, total_in_cents
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+            [
+              randomUUID(),
+              actor.siteId,
+              refundId,
+              payment.id,
+              payment.payment_method_id,
+              snapshot.saleInCents,
+              snapshot.tipInCents,
+              snapshot.totalInCents,
+            ],
+          );
+          await transaction.query(
+            `UPDATE payments SET status = 'refunded' WHERE id = $1`,
+            [payment.id],
+          );
+          if (payment.method_code === "CASH") {
+            await transaction.query(
+              `INSERT INTO cash_movements (
+                 id, site_id, shift_id, type, direction, amount_in_cents,
+                 refund_id, reason, created_by_user_id,
+                 created_on_terminal_id, created_at
+               ) VALUES ($1, $2, $3, 'cash_out', 'out', $4, $5, $6, $7, $8, $9)`,
+              [
+                randomUUID(),
+                actor.siteId,
+                shift.id,
+                snapshot.totalInCents,
+                refundId,
+                `${input.kind === "cancellation" ? "Cancelación" : "Devolución"} ${receipt.folio}: ${reason}`,
+                actor.userId,
+                actor.terminalId,
+                createdAt,
+              ],
+            );
+          }
+        }
+        await transaction.query(
+          `UPDATE sales_receipts
+              SET status = $3
+            WHERE id = $1 AND site_id = $2`,
+          [
+            receiptId,
+            actor.siteId,
+            input.kind === "cancellation" ? "cancelled" : "refunded",
+          ],
+        );
+        await this.audit.append(transaction, {
+          id: randomUUID(),
+          siteId: actor.siteId,
+          actorUserId: actor.userId,
+          terminalId: actor.terminalId,
+          action: input.kind === "cancellation"
+            ? "sales.receipt.cancelled"
+            : "sales.receipt.refunded",
+          entityType: "sales_receipt",
+          entityId: receiptId,
+          changes: body,
+        });
+        await this.outbox.enqueue(transaction, {
+          id: randomUUID(),
+          siteId: actor.siteId,
+          eventType: input.kind === "cancellation"
+            ? "sales.receipt.cancelled"
+            : "sales.receipt.refunded",
+          aggregateType: "sales_receipt",
+          aggregateId: receiptId,
+          payload: body,
+        });
+        return { status: 201, body };
+      },
+    );
   }
 
   checkout(
@@ -245,6 +541,18 @@ export class SalesService {
             actor.userId,
             actor.terminalId,
             issuedAt,
+          ],
+        );
+
+        await transaction.query(
+          `INSERT INTO print_jobs (
+             id, site_id, receipt_id, kind, payload
+           ) VALUES ($1, $2, $3, 'receipt', $4::jsonb)`,
+          [
+            randomUUID(),
+            actor.siteId,
+            receiptId,
+            JSON.stringify({ kind: "receipt", receipt: body }),
           ],
         );
 

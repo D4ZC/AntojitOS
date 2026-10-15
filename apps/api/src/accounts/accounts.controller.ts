@@ -42,6 +42,12 @@ const requireIdempotencyKey = (key: string | undefined): string => {
 export class AccountsController {
   constructor(@Inject(AccountsService) private readonly accounts: AccountsService) {}
 
+  @Get("open-counter")
+  @RequirePermissions("service.account.read")
+  listOpenCounter(@Req() request: RequestWithAuth) {
+    return this.accounts.listOpenCounter(request.auth);
+  }
+
   @Get("table/:tableId")
   @RequirePermissions("service.account.read")
   listByTable(

@@ -31,6 +31,7 @@ const credentials = async (): Promise<AgentCredentials> => {
       code: config.code,
       displayName: config.displayName,
       centerCodes: config.centerCodes,
+      registerCodes: config.registerCodes,
     },
   );
   await mkdir(dirname(config.credentialsPath), { recursive: true });

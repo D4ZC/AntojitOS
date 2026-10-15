@@ -10,6 +10,7 @@ Punto de venta web local-first para restaurantes. La operación de la sucursal s
 - Fase 3: KDS, enrutamiento por centro y cola durable para impresión ESC/POS.
 - Fase 4A: precuenta, totales/impuestos, descuentos y gestión transaccional de cuentas.
 - Fase 4B.1: apertura de caja, cobro, propina, cambio, ticket y cierre de cuenta.
+- Fase 4B.2: movimientos, corte preliminar/final, diferencias, devoluciones y ticket físico.
 
 ## Requisitos de desarrollo
 
@@ -53,6 +54,7 @@ pnpm test:offline
 - `docs/phase-3`: KDS, impresión durable y pruebas del agente.
 - `docs/phase-4`: precuenta, gestión de cuentas y preparación del cobro.
 - `docs/phase-4b`: cobro transaccional, ticket y apertura de turno de caja.
+- `docs/phase-4b2`: cierre de caja, devoluciones e impresión de tickets y cortes.
 - `docs/architecture`: decisiones de arquitectura.
 - `docs/data`: modelo de datos inicial.
 - `SOFT_RESTAURANT_FUNCIONALIDADES.md`: mapa funcional de referencia.

@@ -32,6 +32,8 @@ describe("migraciones de fundación", () => {
         "audit_events",
         "cash_movements",
         "cash_registers",
+        "cash_shift_closes",
+        "cash_shift_declarations",
         "cash_shifts",
         "dining_areas",
         "idempotency_records",
@@ -42,12 +44,14 @@ describe("migraciones de fundación", () => {
         "payment_allocations",
         "payment_methods",
         "payment_tips",
+        "refund_payments",
         "products",
         "production_tickets",
         "print_jobs",
         "service_accounts",
         "sites",
         "sales_receipts",
+        "sales_refunds",
         "terminals",
         "user_sessions",
       ]),
@@ -55,6 +59,6 @@ describe("migraciones de fundación", () => {
     const applied = await database.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM schema_migrations",
     );
-    expect(applied.rows[0]?.count).toBe("5");
+    expect(applied.rows[0]?.count).toBe("6");
   });
 });

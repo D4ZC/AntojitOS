@@ -3,10 +3,13 @@ import { ApiError, PosApi } from "./api/pos-api";
 import type {
   AccountManagementOptions,
   AccountSummary,
+  CashShiftClose,
   CashShiftContext,
+  CashShiftReport,
   CatalogCategory,
   CatalogProduct,
   CheckoutPayment,
+  OpenCounterAccount,
   PaymentMethod,
   Precheck,
   RemoteOrderItem,
@@ -15,6 +18,7 @@ import type {
   ServiceTable,
   Session,
   SalesReceipt,
+  SalesReceiptSummary,
   TerminalCredentials,
 } from "./api/types";
 import { formatMoney } from "./format";
@@ -43,14 +47,34 @@ export interface RemoteApi {
   }): Promise<{ id: string }>;
   account(accountId: string): Promise<ServiceAccount>;
   tableAccounts(tableId: string): Promise<AccountSummary[]>;
+  openCounterAccounts(): Promise<OpenCounterAccount[]>;
   accountManagementOptions(accountId: string): Promise<AccountManagementOptions>;
   currentCashShift(): Promise<CashShiftContext>;
   openCashShift(openingFloatInCents: number): Promise<CashShiftContext>;
+  currentCashReport(): Promise<CashShiftReport>;
+  createCashMovement(input: {
+    direction: "in" | "out";
+    amountInCents: number;
+    reason: string;
+  }): Promise<{ id: string }>;
+  closeCashShift(input: {
+    expectedVersion: number;
+    declarations: Array<{
+      methodCode: "CASH" | "CARD" | "TRANSFER";
+      declaredInCents: number;
+    }>;
+  }): Promise<CashShiftClose>;
   paymentMethods(): Promise<PaymentMethod[]>;
   checkoutAccount(
     accountId: string,
     input: { expectedVersion: number; payments: CheckoutPayment[] },
   ): Promise<SalesReceipt>;
+  recentReceipts(): Promise<SalesReceiptSummary[]>;
+  reprintReceipt(receiptId: string, reason: string): Promise<{ jobId: string }>;
+  refundReceipt(
+    receiptId: string,
+    input: { kind: "cancellation" | "refund"; reason: string },
+  ): Promise<{ id: string }>;
   createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck>;
   applyAccountAdjustment(
     accountId: string,
@@ -186,6 +210,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [cancellationReason, setCancellationReason] = useState("");
   const [precheck, setPrecheck] = useState<Precheck | null>(null);
   const [accountChoices, setAccountChoices] = useState<AccountSummary[]>([]);
+  const [openCounterAccounts, setOpenCounterAccounts] = useState<OpenCounterAccount[]>([]);
   const [managementOpen, setManagementOpen] = useState(false);
   const [managementOptions, setManagementOptions] = useState<AccountManagementOptions | null>(null);
   const [managementReason, setManagementReason] = useState("");
@@ -206,14 +231,31 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [cardReference, setCardReference] = useState("");
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<SalesReceipt | null>(null);
+  const [cashPanelOpen, setCashPanelOpen] = useState(false);
+  const [cashReport, setCashReport] = useState<CashShiftReport | null>(null);
+  const [cashClose, setCashClose] = useState<CashShiftClose | null>(null);
+  const [recentReceipts, setRecentReceipts] = useState<SalesReceiptSummary[]>([]);
+  const [cashPanelError, setCashPanelError] = useState<string | null>(null);
+  const [cashMovementDirection, setCashMovementDirection] = useState<"in" | "out">("out");
+  const [cashMovementAmount, setCashMovementAmount] = useState("");
+  const [cashMovementReason, setCashMovementReason] = useState("");
+  const [cashDeclarations, setCashDeclarations] = useState<Record<string, string>>({});
+  const [cashCloseConfirmation, setCashCloseConfirmation] = useState(false);
+  const [receiptAction, setReceiptAction] = useState<{
+    receipt: SalesReceiptSummary;
+    kind: "reprint" | "cancellation" | "refund";
+  } | null>(null);
+  const [receiptActionReason, setReceiptActionReason] = useState("");
 
   const loadServiceData = async () => {
-    const [nextCatalog, nextLayout] = await Promise.all([
+    const [nextCatalog, nextLayout, nextCounterAccounts] = await Promise.all([
       api.catalog(),
       api.serviceLayout(),
+      api.openCounterAccounts(),
     ]);
     setCatalog(nextCatalog);
     setLayout(nextLayout);
+    setOpenCounterAccounts(nextCounterAccounts);
     setActiveCategoryId((current) =>
       current && nextCatalog.some((category) => category.id === current)
         ? current
@@ -288,6 +330,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     api.setAccessToken(undefined);
     setSession(null);
     setAccount(null);
+    setOpenCounterAccounts([]);
     setCatalog([]);
     setLayout(null);
     setError(null);
@@ -885,6 +928,149 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const loadCashPanelData = async () => {
+    const context = await api.currentCashShift();
+    const receipts = await api.recentReceipts();
+    setCashShiftContext(context);
+    setRecentReceipts(receipts);
+    if (!context.shift) {
+      setCashReport(null);
+      setCashDeclarations({});
+      return;
+    }
+    const report = await api.currentCashReport();
+    setCashReport(report);
+    setCashDeclarations(Object.fromEntries(
+      report.paymentMethods.map((method) => [
+        method.code,
+        moneyInput(
+          method.code === "CASH"
+            ? report.cash.theoreticalInCents
+            : method.netInCents,
+        ),
+      ]),
+    ));
+  };
+
+  const openCashPanel = async () => {
+    if (busy) return;
+    setBusy(true);
+    setCashPanelError(null);
+    setCashClose(null);
+    setCashCloseConfirmation(false);
+    try {
+      await loadCashPanelData();
+      setCashPanelOpen(true);
+    } catch (panelError) {
+      setError(messageFor(panelError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openShiftFromCashPanel = async () => {
+    const openingFloatInCents = moneyInputToCents(openingFloat);
+    if (openingFloatInCents === null) {
+      setCashPanelError("Captura un fondo inicial válido");
+      return;
+    }
+    setBusy(true);
+    setCashPanelError(null);
+    try {
+      await api.openCashShift(openingFloatInCents);
+      await loadCashPanelData();
+      setNotice("Turno de caja abierto");
+    } catch (shiftError) {
+      setCashPanelError(messageFor(shiftError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const recordCashMovement = async () => {
+    const amountInCents = moneyInputToCents(cashMovementAmount);
+    if (!amountInCents || !cashMovementReason.trim()) {
+      setCashPanelError("Captura un importe mayor a cero y el motivo");
+      return;
+    }
+    setBusy(true);
+    setCashPanelError(null);
+    try {
+      await api.createCashMovement({
+        direction: cashMovementDirection,
+        amountInCents,
+        reason: cashMovementReason.trim(),
+      });
+      setCashMovementAmount("");
+      setCashMovementReason("");
+      await loadCashPanelData();
+      setNotice(cashMovementDirection === "in" ? "Entrada de caja registrada" : "Salida de caja registrada");
+    } catch (movementError) {
+      setCashPanelError(messageFor(movementError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const closeCurrentCashShift = async () => {
+    if (!cashReport) return;
+    const declarations = cashReport.paymentMethods.map((method) => ({
+      methodCode: method.code,
+      declaredInCents: moneyInputToCents(cashDeclarations[method.code] ?? "") ?? -1,
+    }));
+    if (declarations.some((declaration) => declaration.declaredInCents < 0)) {
+      setCashPanelError("Captura una declaración válida para cada forma de pago");
+      return;
+    }
+    setBusy(true);
+    setCashPanelError(null);
+    try {
+      const result = await api.closeCashShift({
+        expectedVersion: cashReport.shift.version,
+        declarations,
+      });
+      setCashClose(result);
+      setCashReport(null);
+      setCashShiftContext({ register: result.report.register, shift: null });
+      setCashCloseConfirmation(false);
+      setNotice("Turno de caja cerrado y corte enviado a impresión");
+    } catch (closeError) {
+      setCashPanelError(messageFor(closeError));
+      setCashCloseConfirmation(false);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const performReceiptAction = async () => {
+    if (!receiptAction || !receiptActionReason.trim()) return;
+    setBusy(true);
+    setCashPanelError(null);
+    try {
+      if (receiptAction.kind === "reprint") {
+        await api.reprintReceipt(receiptAction.receipt.id, receiptActionReason.trim());
+        setNotice(`${receiptAction.receipt.folio} enviado a reimpresión`);
+      } else {
+        await api.refundReceipt(receiptAction.receipt.id, {
+          kind: receiptAction.kind,
+          reason: receiptActionReason.trim(),
+        });
+        await loadCashPanelData();
+        setNotice(
+          receiptAction.kind === "cancellation"
+            ? `${receiptAction.receipt.folio} cancelado`
+            : `${receiptAction.receipt.folio} devuelto`,
+        );
+      }
+      setReceiptAction(null);
+      setReceiptActionReason("");
+    } catch (actionError) {
+      setCashPanelError(messageFor(actionError));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!terminal) {
     return (
       <AccessShell title="Configurar terminal" subtitle="Esta operación se realiza una sola vez en cada tablet.">
@@ -914,17 +1100,21 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   }
 
   if (!account) {
+    const canManageCash = session.user.permissions.includes("cash.shift.preview");
     return (
       <main className="service-shell">
         <RemoteTopbar terminal={terminal} session={session} onLogout={logout} />
         <section className="service-selector" aria-labelledby="service-title">
           <div className="service-selector-heading">
             <div><span className="eyebrow">Nuevo servicio</span><h1 id="service-title">Selecciona una mesa</h1></div>
-            <div className="guest-counter" aria-label="Número de comensales">
-              <span>Comensales</span>
-              <button type="button" aria-label="Quitar comensal" disabled={guestCount <= 1} onClick={() => setGuestCount((count) => count - 1)}>−</button>
-              <output aria-label={`${guestCount} comensales`}>{guestCount}</output>
-              <button type="button" aria-label="Agregar comensal" disabled={guestCount >= 99} onClick={() => setGuestCount((count) => count + 1)}>+</button>
+            <div className="service-heading-actions">
+              {canManageCash && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => void openCashPanel()}>Caja y corte</button>}
+              <div className="guest-counter" aria-label="Número de comensales">
+                <span>Comensales</span>
+                <button type="button" aria-label="Quitar comensal" disabled={guestCount <= 1} onClick={() => setGuestCount((count) => count - 1)}>−</button>
+                <output aria-label={`${guestCount} comensales`}>{guestCount}</output>
+                <button type="button" aria-label="Agregar comensal" disabled={guestCount >= 99} onClick={() => setGuestCount((count) => count + 1)}>+</button>
+              </div>
             </div>
           </div>
           {error && <p className="form-error service-error" role="alert">{error}</p>}
@@ -932,6 +1122,21 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             <button type="button" disabled={busy} onClick={() => void openCounterService("quick")}><span>⚡</span><strong>Venta rápida</strong><small>Sin mesa</small></button>
             <button type="button" disabled={busy} onClick={() => void openCounterService("takeaway")}><span>🛍️</span><strong>Para llevar</strong><small>Orden abierta</small></button>
           </div>
+          {openCounterAccounts.length > 0 && (
+            <section className="open-counter-section" aria-labelledby="open-counter-title">
+              <div><h2 id="open-counter-title">Servicios abiertos</h2><span>{openCounterAccounts.length} sin mesa</span></div>
+              <div className="open-counter-grid">
+                {openCounterAccounts.map((openAccount) => (
+                  <button type="button" key={openAccount.id} disabled={busy} onClick={() => void selectExistingAccount(openAccount.id)} aria-label={`Abrir ${openAccount.label} ${openAccount.sequence}`}>
+                    <span>{openAccount.serviceType === "takeaway" ? "🛍️" : "⚡"}</span>
+                    <strong>{openAccount.label} {openAccount.sequence}</strong>
+                    <small>{openAccount.itemCount} productos · {openAccount.responsible.displayName}</small>
+                    <b>{formatMoney(openAccount.totalInCents)}</b>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )}
           {layout?.areas.map((area) => (
             <section className="area-section" key={area.id} aria-labelledby={`area-${area.id}`}>
               <h2 id={`area-${area.id}`}>{area.name}</h2>
@@ -967,6 +1172,135 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                   </button>
                 ))}
               </div>
+            </section>
+          </div>
+        )}
+        {cashPanelOpen && (
+          <div className="modal-backdrop" role="presentation">
+            <section className="touch-modal cash-panel-modal" role="dialog" aria-modal="true" aria-labelledby="cash-panel-title">
+              <div className="modal-heading">
+                <div><span className="eyebrow">Operación auditada</span><h2 id="cash-panel-title">Caja y corte</h2></div>
+                <button type="button" aria-label="Cerrar" onClick={() => { setCashPanelOpen(false); setReceiptAction(null); }}>×</button>
+              </div>
+              {cashPanelError && <p className="form-error" role="alert">{cashPanelError}</p>}
+
+              {cashClose ? (
+                <section className="cash-close-result">
+                  <span className="success-mark" aria-hidden="true">✓</span>
+                  <h3>Turno cerrado</h3>
+                  <p>El corte quedó guardado y se envió a la cola de impresión.</p>
+                  <div className="cash-declaration-results">
+                    {cashClose.declarations.map((declaration) => (
+                      <div key={declaration.method.code}>
+                        <span>{declaration.method.name}</span>
+                        <strong>{formatMoney(declaration.declaredInCents)}</strong>
+                        <small className={declaration.differenceInCents === 0 ? "balanced" : "difference"}>Diferencia {formatMoney(declaration.differenceInCents)}</small>
+                      </div>
+                    ))}
+                  </div>
+                  <button className="access-primary" type="button" onClick={() => setCashPanelOpen(false)}>Finalizar</button>
+                </section>
+              ) : !cashShiftContext?.shift || !cashReport ? (
+                <div className="cash-panel-content">
+                  <section className="cash-open-panel">
+                    <h3>Abrir turno de caja</h3>
+                    <p>Registra el efectivo disponible para dar cambio. No se contará como venta.</p>
+                    <label>Fondo inicial<input aria-label="Fondo inicial de caja" type="number" inputMode="decimal" min="0" step="0.01" value={openingFloat} onChange={(event) => setOpeningFloat(event.target.value)} /></label>
+                    <button className="access-primary" type="button" disabled={busy} onClick={() => void openShiftFromCashPanel()}>{busy ? "Abriendo…" : "Abrir turno"}</button>
+                  </section>
+                  <section className="cash-panel-section">
+                    <h3>Tickets recientes</h3>
+                    <p>La reimpresión está disponible aunque el turno anterior ya esté cerrado.</p>
+                    <div className="cash-receipt-list">
+                      {recentReceipts.length === 0 && <p className="management-hint">Todavía no hay tickets.</p>}
+                      {recentReceipts.map((item) => (
+                        <article key={item.id}>
+                          <div><strong>{item.folio}</strong><span>{item.accountLabel}</span><small>{new Date(item.issuedAt).toLocaleString("es-MX")} · {item.status === "issued" ? "Emitido" : item.status === "cancelled" ? "Cancelado" : "Devuelto"}</small></div>
+                          <strong>{formatMoney(item.totalInCents)}</strong>
+                          <div className="cash-receipt-actions"><button type="button" onClick={() => { setReceiptAction({ receipt: item, kind: "reprint" }); setReceiptActionReason(""); }}>Reimprimir</button></div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+                </div>
+              ) : (
+                <div className="cash-panel-content">
+                  <section className="cash-summary-grid" aria-label="Resumen del turno">
+                    <div><span>Venta neta</span><strong>{formatMoney(cashReport.sales.netSaleInCents)}</strong><small>{cashReport.sales.receiptCount} tickets</small></div>
+                    <div><span>Efectivo teórico</span><strong>{formatMoney(cashReport.cash.theoreticalInCents)}</strong><small>Incluye fondo y movimientos</small></div>
+                    <div><span>Devoluciones</span><strong>{formatMoney(cashReport.sales.refundedSaleInCents)}</strong><small>{cashReport.sales.refundCount} operaciones</small></div>
+                    <div><span>Cuentas abiertas</span><strong>{cashReport.openAccountCount}</strong><small>{cashReport.openAccountCount === 0 ? "Listo para cierre" : "Deben cerrarse primero"}</small></div>
+                  </section>
+
+                  <section className="cash-panel-section">
+                    <h3>Formas de pago</h3>
+                    <div className="cash-method-list">
+                      {cashReport.paymentMethods.map((method) => <div key={method.code}><span>{method.name}</span><strong>{formatMoney(method.netInCents)}</strong></div>)}
+                    </div>
+                  </section>
+
+                  <section className="cash-panel-section">
+                    <h3>Entrada o salida de efectivo</h3>
+                    <div className="cash-movement-form">
+                      <div className="cash-direction-options">
+                        <button className={cashMovementDirection === "in" ? "selected" : ""} type="button" onClick={() => setCashMovementDirection("in")}>Entrada</button>
+                        <button className={cashMovementDirection === "out" ? "selected" : ""} type="button" onClick={() => setCashMovementDirection("out")}>Retiro / gasto</button>
+                      </div>
+                      <label>Importe<input aria-label="Importe del movimiento" type="number" inputMode="decimal" min="0.01" step="0.01" value={cashMovementAmount} onChange={(event) => setCashMovementAmount(event.target.value)} /></label>
+                      <label>Motivo<input aria-label="Motivo del movimiento" maxLength={200} value={cashMovementReason} onChange={(event) => setCashMovementReason(event.target.value)} /></label>
+                      <button type="button" disabled={busy || !cashMovementAmount || !cashMovementReason.trim()} onClick={() => void recordCashMovement()}>Registrar movimiento</button>
+                    </div>
+                  </section>
+
+                  <section className="cash-panel-section">
+                    <h3>Tickets recientes</h3>
+                    <div className="cash-receipt-list">
+                      {recentReceipts.length === 0 && <p className="management-hint">Todavía no hay tickets.</p>}
+                      {recentReceipts.map((item) => (
+                        <article key={item.id}>
+                          <div><strong>{item.folio}</strong><span>{item.accountLabel}</span><small>{new Date(item.issuedAt).toLocaleString("es-MX")} · {item.status === "issued" ? "Emitido" : item.status === "cancelled" ? "Cancelado" : "Devuelto"}</small></div>
+                          <strong>{formatMoney(item.totalInCents)}</strong>
+                          <div className="cash-receipt-actions">
+                            <button type="button" onClick={() => { setReceiptAction({ receipt: item, kind: "reprint" }); setReceiptActionReason(""); }}>Reimprimir</button>
+                            {item.status === "issued" && <button type="button" onClick={() => { setReceiptAction({ receipt: item, kind: "cancellation" }); setReceiptActionReason(""); }}>Cancelar</button>}
+                            {item.status === "issued" && <button className="danger-button" type="button" onClick={() => { setReceiptAction({ receipt: item, kind: "refund" }); setReceiptActionReason(""); }}>Devolver</button>}
+                          </div>
+                        </article>
+                      ))}
+                    </div>
+                  </section>
+
+                  <section className="cash-panel-section cash-close-section">
+                    <h3>Declaración y cierre</h3>
+                    <p>Cuenta el efectivo y compara los comprobantes antes de cerrar.</p>
+                    <div className="cash-declaration-grid">
+                      {cashReport.paymentMethods.map((method) => (
+                        <label key={method.code}>{method.name}<input aria-label={`Declarado ${method.name}`} type="number" inputMode="decimal" min="0" step="0.01" value={cashDeclarations[method.code] ?? ""} onChange={(event) => setCashDeclarations((current) => ({ ...current, [method.code]: event.target.value }))} /></label>
+                      ))}
+                    </div>
+                    {cashReport.openAccountCount > 0 && <p className="form-error">Cierra o cancela las cuentas abiertas antes de cerrar caja.</p>}
+                    {cashCloseConfirmation ? (
+                      <div className="danger-confirmation">
+                        <strong>¿Confirmas el cierre definitivo del turno?</strong>
+                        <span>Después del cierre no se podrán registrar más cobros ni movimientos en este turno.</span>
+                        <div><button type="button" onClick={() => setCashCloseConfirmation(false)}>Seguir revisando</button><button className="danger-button" type="button" disabled={busy || cashReport.openAccountCount > 0} onClick={() => void closeCurrentCashShift()}>Confirmar cierre</button></div>
+                      </div>
+                    ) : (
+                      <button className="danger-button cash-close-button" type="button" disabled={busy || cashReport.openAccountCount > 0} onClick={() => setCashCloseConfirmation(true)}>Cerrar turno de caja</button>
+                    )}
+                  </section>
+                </div>
+              )}
+            </section>
+          </div>
+        )}
+        {cashPanelOpen && receiptAction && (
+          <div className="modal-backdrop nested-backdrop" role="presentation">
+            <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="receipt-action-title">
+              <div className="modal-heading"><div><span className="eyebrow">Ticket {receiptAction.receipt.folio}</span><h2 id="receipt-action-title">{receiptAction.kind === "reprint" ? "Reimprimir ticket" : receiptAction.kind === "cancellation" ? "Cancelar ticket" : "Devolver ticket"}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setReceiptAction(null)}>×</button></div>
+              <p className="modal-help">{receiptAction.kind === "reprint" ? "La copia quedará identificada como reimpresión." : "La venta original se conservará y se generará un movimiento compensatorio."}</p>
+              <label>Motivo<textarea aria-label="Motivo de la acción sobre el ticket" value={receiptActionReason} maxLength={200} rows={3} autoFocus onChange={(event) => setReceiptActionReason(event.target.value)} /></label>
+              <div className="modal-actions"><button type="button" onClick={() => setReceiptAction(null)}>Volver</button><button className={receiptAction.kind === "reprint" ? "access-primary" : "danger-button"} type="button" disabled={busy || !receiptActionReason.trim()} onClick={() => void performReceiptAction()}>{busy ? "Procesando…" : "Confirmar"}</button></div>
             </section>
           </div>
         )}

@@ -160,6 +160,18 @@ export interface AccountSummary {
   isPrimary: boolean;
 }
 
+export interface OpenCounterAccount {
+  id: string;
+  label: string;
+  serviceType: "quick" | "takeaway";
+  sequence: number;
+  version: number;
+  responsible: { id: string; displayName: string };
+  itemCount: number;
+  totalInCents: number;
+  openedAt: string;
+}
+
 export interface AccountManagementOptions {
   users: Array<{ id: string; displayName: string }>;
   tables: Array<{ id: string; name: string }>;
@@ -189,6 +201,72 @@ export interface CashShiftContext {
     openedBy: { id: string; displayName: string };
     openedAt: string;
   };
+}
+
+export interface CashShiftReport {
+  register: { id: string; code: string; name: string };
+  shift: NonNullable<CashShiftContext["shift"]>;
+  sales: {
+    receiptCount: number;
+    refundCount: number;
+    subtotalInCents: number;
+    discountInCents: number;
+    taxInCents: number;
+    grossSaleInCents: number;
+    refundedSaleInCents: number;
+    netSaleInCents: number;
+    tipInCents: number;
+    refundedTipInCents: number;
+    averageTicketInCents: number;
+  };
+  paymentMethods: Array<{
+    id: string;
+    code: "CASH" | "CARD" | "TRANSFER";
+    name: string;
+    saleInCents: number;
+    tipInCents: number;
+    refundedSaleInCents: number;
+    refundedTipInCents: number;
+    netInCents: number;
+  }>;
+  cash: {
+    totalInCents: number;
+    totalOutCents: number;
+    theoreticalInCents: number;
+  };
+  movements: Array<{
+    id: string;
+    type: "opening_float" | "sale" | "cash_in" | "cash_out";
+    direction: "in" | "out";
+    amountInCents: number;
+    reason: string | null;
+    createdBy: string;
+    createdAt: string;
+  }>;
+  openAccountCount: number;
+}
+
+export interface CashShiftClose {
+  id: string;
+  status: "closed";
+  closedAt: string;
+  report: CashShiftReport;
+  declarations: Array<{
+    method: { id: string; code: "CASH" | "CARD" | "TRANSFER"; name: string };
+    theoreticalInCents: number;
+    declaredInCents: number;
+    differenceInCents: number;
+  }>;
+}
+
+export interface SalesReceiptSummary {
+  id: string;
+  folio: string;
+  status: "issued" | "cancelled" | "refunded";
+  totalInCents: number;
+  tipInCents: number;
+  issuedAt: string;
+  accountLabel: string;
 }
 
 export interface PaymentMethod {

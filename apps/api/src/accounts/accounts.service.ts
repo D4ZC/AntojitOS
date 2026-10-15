@@ -824,6 +824,44 @@ export class AccountsService {
     };
   }
 
+  async listOpenCounter(actor: AuthContext) {
+    const result = await this.database.query<{
+      id: string;
+      service_type: "quick" | "takeaway";
+      opened_at: Date | string;
+    }>(
+      `SELECT id, service_type, opened_at
+         FROM service_accounts
+        WHERE site_id = $1 AND table_id IS NULL
+          AND service_type IN ('quick', 'takeaway')
+          AND status IN ('open', 'awaiting_payment')
+        ORDER BY opened_at, id`,
+      [actor.siteId],
+    );
+    const accounts = await Promise.all(
+      result.rows.map(async (row) => ({
+        row,
+        account: await this.readAccount(this.database, row.id, actor.siteId),
+      })),
+    );
+    return {
+      accounts: accounts.map(({ row, account }, index) => ({
+        id: account.id,
+        label: account.reference
+          ?? (row.service_type === "takeaway" ? "Para llevar" : "Venta rápida"),
+        serviceType: row.service_type,
+        sequence: index + 1,
+        version: account.version,
+        responsible: account.responsible,
+        itemCount: account.items
+          .filter((item) => item.preparationState !== "cancelled")
+          .reduce((total, item) => total + item.quantity, 0),
+        totalInCents: account.totalInCents,
+        openedAt: new Date(row.opened_at).toISOString(),
+      })),
+    };
+  }
+
   async managementOptions(accountId: string, actor: AuthContext) {
     const current = await this.readAccount(this.database, accountId, actor.siteId);
     const [users, tables, otherIds] = await Promise.all([

@@ -91,6 +91,39 @@ describe("cuentas y captura concurrente", () => {
     });
   });
 
+  it("recupera ventas rápidas y para llevar que siguen abiertas", async () => {
+    database = await createServiceFixture();
+    const accounts = createAccountsService(database);
+    const terminal = actor(fixtureIds.terminalOne);
+    const quick = await accounts.open(
+      { serviceType: "quick", guestCount: 1 },
+      "open-quick-recovery",
+      terminal,
+    );
+    const takeaway = await accounts.open(
+      { serviceType: "takeaway", guestCount: 1, reference: "Pedido Ana" },
+      "open-takeaway-recovery",
+      terminal,
+    );
+
+    const open = await accounts.listOpenCounter(terminal);
+
+    expect(open.accounts).toEqual([
+      expect.objectContaining({
+        id: quick.body.id,
+        label: "Venta rápida",
+        serviceType: "quick",
+        sequence: 1,
+      }),
+      expect.objectContaining({
+        id: takeaway.body.id,
+        label: "Pedido Ana",
+        serviceType: "takeaway",
+        sequence: 2,
+      }),
+    ]);
+  });
+
   it("calcula descuentos auditables y conserva una precuenta inmutable", async () => {
     database = await createServiceFixture();
     const accounts = createAccountsService(database);
