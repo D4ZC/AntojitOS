@@ -5,6 +5,7 @@ import { AuditService } from "../src/audit/audit.service.js";
 import { CatalogService } from "../src/catalog/catalog.service.js";
 import { IdempotencyService } from "../src/idempotency/idempotency.service.js";
 import { OutboxService } from "../src/outbox/outbox.service.js";
+import { ProductionService } from "../src/production/production.service.js";
 import type { AuthContext } from "../src/security/auth-context.js";
 import {
   createServiceFixture,
@@ -28,13 +29,13 @@ const actor = (terminalId: string): AuthContext => ({
   ],
 });
 
-const createAccountsService = (database: TestDatabase): AccountsService =>
-  new AccountsService(
-    database,
-    new AuditService(),
-    new IdempotencyService(database),
-    new OutboxService(),
-  );
+const createAccountsService = (database: TestDatabase): AccountsService => {
+  const audit = new AuditService();
+  const idempotency = new IdempotencyService(database);
+  const outbox = new OutboxService();
+  const production = new ProductionService(database, audit, idempotency, outbox);
+  return new AccountsService(database, audit, idempotency, outbox, production);
+};
 
 let database: TestDatabase | undefined;
 
@@ -181,12 +182,18 @@ describe("cuentas y captura concurrente", () => {
       "SELECT event_type FROM outbox_events ORDER BY created_at, id",
     );
     expect(rounds.rows[0]?.count).toBe("1");
-    expect(events.rows.map((event) => event.event_type)).toEqual([
+    expect(events.rows.map((event) => event.event_type).sort()).toEqual([
       "account.opened",
       "account.updated",
       "account.updated",
       "order.round.submitted",
-    ]);
+      "production.ticket.created",
+    ].sort());
+    const productionIntent = await database.query<{ tickets: string; jobs: string }>(
+      `SELECT
+         (SELECT count(*)::text FROM production_tickets) AS tickets,
+         (SELECT count(*)::text FROM print_jobs) AS jobs`,
+    );
+    expect(productionIntent.rows[0]).toEqual({ tickets: "1", jobs: "1" });
   });
 });
-

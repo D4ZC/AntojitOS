@@ -16,6 +16,7 @@ import type { RequestWithAuth } from "../security/auth-context.js";
 import { RequirePermissions } from "../security/permissions.decorator.js";
 import { AccountsService } from "./accounts.service.js";
 import { AddOrderItemDto } from "./dto/add-order-item.dto.js";
+import { CancelOrderItemDto } from "./dto/cancel-order-item.dto.js";
 import { OpenAccountDto } from "./dto/open-account.dto.js";
 import { SendRoundDto } from "./dto/send-round.dto.js";
 import { UpdateOrderItemDto } from "./dto/update-order-item.dto.js";
@@ -113,5 +114,24 @@ export class AccountsController {
     );
     return { ...result.body, idempotencyReplayed: result.replayed };
   }
-}
 
+  @Post(":accountId/items/:itemId/cancellations")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.item.cancel")
+  async cancelItem(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Param("itemId", ParseUUIDPipe) itemId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: CancelOrderItemDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.cancelItem(
+      accountId,
+      itemId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+}

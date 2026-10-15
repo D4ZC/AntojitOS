@@ -10,6 +10,7 @@ import { DatabaseModule } from "./database/database.module.js";
 import { CatalogModule } from "./catalog/catalog.module.js";
 import { EventsModule } from "./events/events.module.js";
 import { HealthModule } from "./health/health.module.js";
+import { ProductionModule } from "./production/production.module.js";
 import { TerminalsModule } from "./terminals/terminals.module.js";
 
 @Module({
@@ -19,6 +20,7 @@ import { TerminalsModule } from "./terminals/terminals.module.js";
     ScheduleModule.forRoot(),
     AuthModule,
     CatalogModule,
+    ProductionModule,
     AccountsModule,
     EventsModule,
     HealthModule,

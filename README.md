@@ -7,6 +7,7 @@ Punto de venta web local-first para restaurantes. La operación de la sucursal s
 - Fase 0: prototipo táctil para dos terminales Windows.
 - Fase 1: API local, PostgreSQL, sesiones, permisos, auditoría, idempotencia, outbox y eventos en tiempo real.
 - Fase 2: catálogo, mapa de mesas, cuentas persistentes, captura táctil y rondas de producción.
+- Fase 3: KDS, enrutamiento por centro y cola durable para impresión ESC/POS.
 
 ## Requisitos de desarrollo
 
@@ -42,10 +43,12 @@ pnpm test:offline
 
 - `apps/pos`: PWA táctil con modo demostración y modo conectado al servidor local.
 - `apps/api`: API autoritativa local y migraciones PostgreSQL.
+- `apps/print-agent`: agente local de impresión con simulador y adaptador TCP ESC/POS.
 - `packages/domain`: reglas de dominio independientes de la interfaz.
 - `docs/phase-0`: alcance, flujos, estados y permisos iniciales.
 - `docs/phase-1`: fundaciones del servidor local y seguridad.
 - `docs/phase-2`: catálogo, servicio, recorrido táctil y ejecución en tablets.
+- `docs/phase-3`: KDS, impresión durable y pruebas del agente.
 - `docs/architecture`: decisiones de arquitectura.
 - `docs/data`: modelo de datos inicial.
 - `SOFT_RESTAURANT_FUNCIONALIDADES.md`: mapa funcional de referencia.

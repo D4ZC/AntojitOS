@@ -130,6 +130,21 @@ importers:
         specifier: ^3.2.4
         version: 3.2.7(@types/node@24.19.1)(jsdom@27.4.0)(tsx@4.23.15)
 
+  apps/print-agent:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.7.2
+        version: 24.19.1
+      tsx:
+        specifier: ^4.20.6
+        version: 4.23.15
+      typescript:
+        specifier: ^5.9.3
+        version: 5.9.3
+      vitest:
+        specifier: ^3.2.4
+        version: 3.2.7(@types/node@24.19.1)(jsdom@27.4.0)(tsx@4.23.15)
+
   packages/domain:
     devDependencies:
       typescript:

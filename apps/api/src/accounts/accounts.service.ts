@@ -18,8 +18,10 @@ import {
   requestHash,
 } from "../idempotency/idempotency.service.js";
 import { OutboxService } from "../outbox/outbox.service.js";
+import { ProductionService } from "../production/production.service.js";
 import type { AuthContext } from "../security/auth-context.js";
 import type { AddOrderItemDto } from "./dto/add-order-item.dto.js";
+import type { CancelOrderItemDto } from "./dto/cancel-order-item.dto.js";
 import type { OpenAccountDto } from "./dto/open-account.dto.js";
 import type { SendRoundDto } from "./dto/send-round.dto.js";
 import type { UpdateOrderItemDto } from "./dto/update-order-item.dto.js";
@@ -107,6 +109,7 @@ export class AccountsService {
     @Inject(IdempotencyService)
     private readonly idempotency: IdempotencyService,
     @Inject(OutboxService) private readonly outbox: OutboxService,
+    @Inject(ProductionService) private readonly production: ProductionService,
   ) {}
 
   async get(accountId: string, actor: AuthContext) {
@@ -175,7 +178,9 @@ export class AccountsService {
           quantity: modifier.quantity,
         })),
       lineTotalInCents:
-        (item.unit_price_in_cents + item.modifier_total_in_cents) * item.quantity,
+        item.preparation_state === "cancelled"
+          ? 0
+          : (item.unit_price_in_cents + item.modifier_total_in_cents) * item.quantity,
     }));
 
     return {
@@ -547,10 +552,17 @@ export class AccountsService {
             WHERE id = $1 AND site_id = $2`,
           [accountId, actor.siteId, nextVersion],
         );
+        const production = await this.production.planRound(transaction, {
+          siteId: actor.siteId,
+          accountId,
+          roundId,
+          roundSequence: sequence,
+        });
         const body = {
           roundId,
           sequence,
           accountVersion: nextVersion,
+          production,
           items: pending.rows.map((item) => ({
             id: item.id,
             productName: item.product_name,
@@ -578,6 +590,102 @@ export class AccountsService {
           payload: body,
         });
 
+        return { status: 201, body };
+      },
+    );
+  }
+
+  cancelItem(
+    accountId: string,
+    itemId: string,
+    input: CancelOrderItemDto,
+    key: string,
+    actor: AuthContext,
+  ) {
+    return this.idempotency.execute(
+      {
+        siteId: actor.siteId,
+        scope: `account.cancel-item:${accountId}:${itemId}`,
+        key,
+        requestHash: requestHash(input),
+      },
+      async (transaction) => {
+        const account = await this.lockAccount(
+          transaction,
+          accountId,
+          actor.siteId,
+          input.expectedVersion,
+        );
+        const itemResult = await transaction.query<{
+          id: string;
+          product_name: string;
+          preparation_state: string;
+          round_id: string | null;
+        }>(
+          `SELECT id, product_name, preparation_state, round_id
+             FROM order_items
+            WHERE id = $1 AND account_id = $2 AND site_id = $3
+            FOR UPDATE`,
+          [itemId, accountId, actor.siteId],
+        );
+        const item = itemResult.rows[0];
+        if (!item) throw new NotFoundException("Artículo inexistente");
+        if (!["pending", "sent"].includes(item.preparation_state)) {
+          throw new ConflictException("El artículo ya no se puede cancelar");
+        }
+        if (item.preparation_state === "sent" && !item.round_id) {
+          throw new ConflictException("El artículo enviado no tiene una ronda válida");
+        }
+        await transaction.query(
+          `UPDATE order_items
+              SET preparation_state = 'cancelled', updated_at = now()
+            WHERE id = $1 AND account_id = $2 AND site_id = $3`,
+          [itemId, accountId, actor.siteId],
+        );
+        const nextVersion = account.version + 1;
+        await transaction.query(
+          `UPDATE service_accounts
+              SET version = $3, updated_at = now()
+            WHERE id = $1 AND site_id = $2`,
+          [accountId, actor.siteId, nextVersion],
+        );
+        const production = item.preparation_state === "sent" && item.round_id
+          ? await this.production.planCancellation(transaction, {
+              siteId: actor.siteId,
+              accountId,
+              roundId: item.round_id,
+              itemId,
+              reason: input.reason,
+            })
+          : null;
+        const body = {
+          itemId,
+          productName: item.product_name,
+          previousState: item.preparation_state,
+          state: "cancelled",
+          reason: input.reason,
+          accountVersion: nextVersion,
+          production,
+        };
+        await this.audit.append(transaction, {
+          id: randomUUID(),
+          siteId: actor.siteId,
+          actorUserId: actor.userId,
+          terminalId: actor.terminalId,
+          action: "order_item.cancelled",
+          entityType: "service_account",
+          entityId: accountId,
+          reason: input.reason,
+          changes: body,
+        });
+        await this.outbox.enqueue(transaction, {
+          id: randomUUID(),
+          siteId: actor.siteId,
+          eventType: "account.updated",
+          aggregateType: "service_account",
+          aggregateId: accountId,
+          payload: body,
+        });
         return { status: 201, body };
       },
     );

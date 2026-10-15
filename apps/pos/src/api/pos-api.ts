@@ -1,5 +1,6 @@
 import type {
   CatalogCategory,
+  ProductionTicket,
   ServiceAccount,
   ServiceLayout,
   Session,
@@ -43,6 +44,7 @@ export class PosApi {
     bootstrapToken: string;
     terminalCode: string;
     displayName: string;
+    profile?: "pos" | "kds";
   }): Promise<TerminalCredentials> {
     return this.request("/v1/terminals/register", {
       method: "POST",
@@ -51,7 +53,7 @@ export class PosApi {
         siteCode: "PILOT",
         terminalCode: input.terminalCode,
         displayName: input.displayName,
-        profile: "pos",
+        profile: input.profile ?? "pos",
       },
       authenticated: false,
     });
@@ -130,6 +132,18 @@ export class PosApi {
     });
   }
 
+  cancelItem(
+    accountId: string,
+    itemId: string,
+    input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number; state: string }> {
+    return this.request(`/v1/accounts/${accountId}/items/${itemId}/cancellations`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
   sendRound(
     accountId: string,
     expectedVersion: number,
@@ -138,6 +152,38 @@ export class PosApi {
       method: "POST",
       idempotencyKey: this.createIdempotencyKey(),
       body: { expectedVersion },
+    });
+  }
+
+  async productionTickets(): Promise<ProductionTicket[]> {
+    const result = await this.request<{ tickets: ProductionTicket[] }>(
+      "/v1/production/tickets",
+    );
+    return result.tickets;
+  }
+
+  transitionProductionTicket(
+    ticketId: string,
+    input: {
+      status: "in_progress" | "ready" | "delivered";
+      expectedVersion: number;
+    },
+  ): Promise<{ ticketId: string; status: string; version: number }> {
+    return this.request(`/v1/production/tickets/${ticketId}`, {
+      method: "PATCH",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  reprintProductionTicket(
+    ticketId: string,
+    reason: string,
+  ): Promise<{ jobId: string; ticketId: string }> {
+    return this.request(`/v1/production/tickets/${ticketId}/reprints`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: { reason },
     });
   }
 

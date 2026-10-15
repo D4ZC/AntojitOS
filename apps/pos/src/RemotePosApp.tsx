@@ -49,6 +49,11 @@ export interface RemoteApi {
     itemId: string,
     input: { quantity: number; expectedVersion: number; note?: string },
   ): Promise<{ accountVersion: number }>;
+  cancelItem(
+    accountId: string,
+    itemId: string,
+    input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number; state: string }>;
   sendRound(
     accountId: string,
     expectedVersion: number,
@@ -100,6 +105,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [selectedModifierIds, setSelectedModifierIds] = useState<string[]>([]);
   const [editingItem, setEditingItem] = useState<RemoteOrderItem | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [cancellingItem, setCancellingItem] = useState<RemoteOrderItem | null>(null);
+  const [cancellationReason, setCancellationReason] = useState("");
 
   const loadServiceData = async () => {
     const [nextCatalog, nextLayout] = await Promise.all([
@@ -324,6 +331,26 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const cancelItem = async () => {
+    if (!account || !cancellingItem || busy || !cancellationReason.trim()) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api.cancelItem(account.id, cancellingItem.id, {
+        expectedVersion: account.version,
+        reason: cancellationReason.trim(),
+      });
+      await refreshAccount(account.id);
+      setNotice(`${cancellingItem.productName} cancelado con aviso a producción`);
+      setCancellingItem(null);
+      setCancellationReason("");
+    } catch (cancellationError) {
+      await handleMutationError(cancellationError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (!terminal) {
     return (
       <AccessShell title="Configurar terminal" subtitle="Esta operación se realiza una sola vez en cada tablet.">
@@ -465,7 +492,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                 <div className="item-title">
                   <div>
                     <strong>{item.productName}</strong>
-                    <span className={`item-state ${item.preparationState}`}>{item.preparationState === "pending" ? "Pendiente" : "Enviado"}</span>
+                    <span className={`item-state ${item.preparationState}`}>{item.preparationState === "pending" ? "Pendiente" : item.preparationState === "cancelled" ? "Cancelado" : item.preparationState === "fulfilled" ? "Listo" : "Enviado"}</span>
                   </div>
                   <strong>{formatMoney(item.lineTotalInCents)}</strong>
                 </div>
@@ -476,6 +503,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                   <output aria-label={`Cantidad: ${item.quantity}`}>{item.quantity}</output>
                   <button type="button" aria-label={`Agregar una unidad de ${item.productName}`} disabled={busy || item.preparationState !== "pending"} onClick={() => void changeQuantity(item, item.quantity + 1)}>+</button>
                   <button className="note-button" type="button" disabled={busy || item.preparationState !== "pending"} onClick={() => { setEditingItem(item); setNoteDraft(item.note ?? ""); }}>+ Nota</button>
+                  <button className="cancel-button" type="button" disabled={busy || !["pending", "sent"].includes(item.preparationState)} onClick={() => { setCancellingItem(item); setCancellationReason(""); }}>Cancelar</button>
                 </div>
               </article>
             ))}
@@ -521,6 +549,17 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             <div className="modal-heading"><div><span className="eyebrow">Instrucción especial</span><h2 id="note-title">{editingItem.productName}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setEditingItem(null)}>×</button></div>
             <label>Nota para preparación<textarea value={noteDraft} maxLength={200} rows={4} autoFocus onChange={(event) => setNoteDraft(event.target.value)} /></label>
             <div className="modal-actions"><button type="button" onClick={() => setEditingItem(null)}>Cancelar</button><button className="access-primary" type="button" disabled={busy} onClick={() => void changeQuantity(editingItem, editingItem.quantity, noteDraft.trim())}>Guardar nota</button></div>
+          </section>
+        </div>
+      )}
+
+      {cancellingItem && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-title">
+            <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="cancel-title">Cancelar {cancellingItem.productName}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setCancellingItem(null)}>×</button></div>
+            <p className="modal-help">Si el producto ya fue enviado, cocina recibirá una comanda de cancelación.</p>
+            <label>Motivo de cancelación<textarea value={cancellationReason} maxLength={200} rows={3} autoFocus onChange={(event) => setCancellationReason(event.target.value)} /></label>
+            <div className="modal-actions"><button type="button" onClick={() => setCancellingItem(null)}>Volver</button><button className="danger-action" type="button" disabled={!cancellationReason.trim() || busy} onClick={() => void cancelItem()}>Confirmar cancelación</button></div>
           </section>
         </div>
       )}

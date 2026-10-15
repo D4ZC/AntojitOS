@@ -4,6 +4,32 @@ export interface TerminalCredentials {
   displayName: string;
 }
 
+export interface ProductionTicket {
+  id: string;
+  accountId: string;
+  roundId: string;
+  center: { id: string; code: string; name: string };
+  kind: "addition" | "cancellation";
+  roundSequence: number;
+  status: "pending" | "in_progress" | "ready" | "delivered" | "cancelled";
+  version: number;
+  service: {
+    type: "table" | "quick" | "takeaway";
+    label: string;
+  };
+  createdAt: string;
+  startedAt: string | null;
+  readyAt: string | null;
+  items: Array<{
+    id: string;
+    orderItemId: string | null;
+    productName: string;
+    quantity: number;
+    note: string | null;
+    modifiers: string[];
+  }>;
+}
+
 export interface Session {
   accessToken: string;
   expiresAt: string;

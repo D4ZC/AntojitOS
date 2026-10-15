@@ -8,12 +8,13 @@
     "pnpm": ">=10"
   },
   "scripts": {
-    "build": "pnpm --filter @antojit-os/domain build && pnpm --filter @antojit-os/api build && pnpm --filter @antojit-os/pos build",
-    "check": "pnpm --filter @antojit-os/domain check && pnpm --filter @antojit-os/api check && pnpm --filter @antojit-os/pos check",
+    "build": "pnpm --filter @antojit-os/domain build && pnpm --filter @antojit-os/api build && pnpm --filter @antojit-os/pos build && pnpm --filter @antojit-os/print-agent build",
+    "check": "pnpm --filter @antojit-os/domain check && pnpm --filter @antojit-os/api check && pnpm --filter @antojit-os/pos check && pnpm --filter @antojit-os/print-agent check",
     "dev": "pnpm --parallel --filter @antojit-os/api --filter @antojit-os/pos dev",
     "dev:api": "pnpm --filter @antojit-os/api dev",
     "dev:pos": "pnpm --filter @antojit-os/pos dev",
-    "test": "pnpm --filter @antojit-os/domain test && pnpm --filter @antojit-os/api test && pnpm --filter @antojit-os/pos test",
+    "dev:print-agent": "pnpm --filter @antojit-os/print-agent dev",
+    "test": "pnpm --filter @antojit-os/domain test && pnpm --filter @antojit-os/api test && pnpm --filter @antojit-os/pos test && pnpm --filter @antojit-os/print-agent test",
     "test:offline": "node --test packages/domain/tests/order.node.test.mjs"
   }
 }

@@ -540,6 +540,15 @@ h2 {
   font-size: 12px;
 }
 
+.item-actions .cancel-button {
+  min-width: 68px;
+  padding: 0 8px;
+  border-color: #e3b8ae;
+  color: #a24432;
+  background: #fff1ed;
+  font-size: 11px;
+}
+
 .notice {
   display: flex;
   min-height: 36px;
@@ -706,6 +715,19 @@ h2 {
   outline: none;
   background: white;
   font-size: 17px;
+}
+
+.modal-help {
+  margin: -8px 0 18px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.modal-actions .danger-action {
+  border-color: #a9402e;
+  color: white;
+  background: #b94733;
 }
 
 .access-form input:focus,
@@ -1055,6 +1077,312 @@ h2 {
   resize: vertical;
 }
 
+.kds-access {
+  background:
+    radial-gradient(circle at 85% 8%, rgba(230, 95, 68, 0.28), transparent 28%),
+    linear-gradient(145deg, #172d29, #29483f);
+}
+
+.kds-shell {
+  display: grid;
+  grid-template-rows: 76px 64px minmax(0, 1fr);
+  height: 100dvh;
+  overflow: hidden;
+  background: #e6e3dc;
+}
+
+.kds-topbar {
+  display: grid;
+  grid-template-columns: 250px 1fr 260px;
+  align-items: center;
+  padding: 10px 18px;
+  color: white;
+  background: #162e29;
+}
+
+.kds-topbar .brand small {
+  margin-left: 6px;
+  padding: 3px 6px;
+  border-radius: 6px;
+  color: var(--forest);
+  background: #f6cf72;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+}
+
+.kds-topbar > .user-button {
+  justify-self: end;
+}
+
+.kds-live {
+  display: grid;
+  grid-template-columns: 16px auto;
+  align-items: center;
+  justify-content: center;
+  color: #d9e3df;
+}
+
+.kds-live small {
+  grid-column: 2;
+  color: #9fb2ab;
+}
+
+.kds-filters {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 8px 18px;
+  overflow-x: auto;
+  border-bottom: 1px solid #cdc8bd;
+  background: #f5f2eb;
+}
+
+.kds-filters button {
+  display: flex;
+  min-width: 110px;
+  min-height: 46px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 7px 13px;
+  border: 1px solid #d5d0c4;
+  border-radius: 13px;
+  background: white;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.kds-filters button.active {
+  border-color: var(--forest);
+  color: white;
+  background: var(--forest-2);
+}
+
+.kds-filters button span {
+  display: grid;
+  min-width: 22px;
+  height: 22px;
+  place-items: center;
+  border-radius: 7px;
+  background: rgba(118, 128, 123, 0.15);
+}
+
+.kds-filters .kds-refresh {
+  min-width: 46px;
+  margin-left: auto;
+  font-size: 23px;
+}
+
+.kds-alert {
+  position: fixed;
+  z-index: 10;
+  top: 148px;
+  left: 50%;
+  width: min(90%, 620px);
+  padding: 12px 18px;
+  border: 1px solid #e3a99c;
+  border-radius: 13px;
+  color: #883d30;
+  background: #fff0ec;
+  box-shadow: 0 8px 24px rgba(90, 36, 26, 0.16);
+  transform: translateX(-50%);
+  text-align: center;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.kds-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  align-content: start;
+  gap: 14px;
+  padding: 16px;
+  overflow-y: auto;
+}
+
+.kds-empty {
+  display: grid;
+  grid-column: 1 / -1;
+  min-height: 420px;
+  place-content: center;
+  justify-items: center;
+  color: #76807b;
+  text-align: center;
+}
+
+.kds-empty > span {
+  display: grid;
+  width: 72px;
+  height: 72px;
+  margin-bottom: 16px;
+  place-items: center;
+  border-radius: 24px;
+  color: #2f8069;
+  background: #dcece6;
+  font-size: 34px;
+}
+
+.kds-empty h1 {
+  color: var(--ink);
+}
+
+.kds-empty p {
+  margin-top: 6px;
+}
+
+.kds-ticket {
+  display: grid;
+  grid-template-rows: auto auto minmax(150px, 1fr) auto;
+  min-height: 360px;
+  overflow: hidden;
+  border: 1px solid #cec8bc;
+  border-top: 7px solid #d99d31;
+  border-radius: 18px;
+  background: #fffefa;
+  box-shadow: 0 4px 12px rgba(39, 48, 44, 0.09);
+}
+
+.kds-ticket.state-in_progress {
+  border-top-color: #dc644b;
+}
+
+.kds-ticket.state-ready {
+  border-top-color: #3c967b;
+  background: #f3fbf7;
+}
+
+.kds-ticket.kind-cancellation {
+  border-top-color: #aa3726;
+  background: #fff1ed;
+}
+
+.kds-ticket.kind-cancellation .kds-ticket-meta span:last-child {
+  color: #8f4537;
+}
+
+.kds-ticket.aging {
+  box-shadow: 0 0 0 3px rgba(199, 65, 42, 0.32), 0 5px 18px rgba(96, 37, 27, 0.16);
+}
+
+.kds-ticket > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 14px 15px 10px;
+}
+
+.kds-ticket > header > div {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.kds-ticket > header strong {
+  font-family: "Segoe UI Variable Display", "Segoe UI", sans-serif;
+  font-size: 19px;
+}
+
+.kds-ticket time {
+  padding: 5px 8px;
+  border-radius: 8px;
+  color: #855b16;
+  background: #fff0cb;
+  font-size: 11px;
+  font-weight: 900;
+}
+
+.aging time {
+  color: white;
+  background: #c74935;
+}
+
+.kds-sequence {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.kds-ticket-meta {
+  display: flex;
+  justify-content: space-between;
+  padding: 0 15px 10px;
+  border-bottom: 1px dashed #d9d3c8;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.kds-items {
+  padding: 6px 15px;
+}
+
+.kds-item {
+  display: grid;
+  gap: 4px;
+  padding: 11px 0;
+  border-bottom: 1px solid #ece8df;
+}
+
+.kds-item strong {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 16px;
+}
+
+.kds-item strong > span {
+  display: grid;
+  min-width: 30px;
+  height: 30px;
+  place-items: center;
+  border-radius: 9px;
+  color: white;
+  background: var(--forest-2);
+}
+
+.kds-item small,
+.kds-item em {
+  padding-left: 39px;
+  color: #69746f;
+  font-size: 12px;
+}
+
+.kds-item em {
+  color: #9b4e3d;
+  font-style: normal;
+  font-weight: 800;
+}
+
+.kds-ticket > footer {
+  display: grid;
+  grid-template-columns: 0.8fr 1.3fr;
+  gap: 8px;
+  padding: 11px;
+  border-top: 1px solid #dfdad0;
+  background: #f4f1ea;
+}
+
+.kds-ticket > footer button {
+  min-height: 52px;
+  border-radius: 13px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.kds-reprint {
+  border: 1px solid #d0cabf;
+  color: #65706c;
+  background: white;
+}
+
+.kds-action {
+  border: 1px solid var(--forest);
+  color: white;
+  background: var(--forest);
+}
+
 @media (max-width: 1050px) {
   .topbar {
     grid-template-columns: 170px 1fr 190px;
@@ -1165,6 +1493,18 @@ h2 {
 
   .bottom-status {
     min-height: 32px;
+  }
+
+  .kds-topbar {
+    grid-template-columns: 1fr auto;
+  }
+
+  .kds-live {
+    display: none;
+  }
+
+  .kds-board {
+    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
   }
 }
 

@@ -103,6 +103,7 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   account: vi.fn().mockResolvedValue(emptyAccount),
   addItem: vi.fn().mockResolvedValue({ accountVersion: 1 }),
   updateItem: vi.fn().mockResolvedValue({ accountVersion: 2 }),
+  cancelItem: vi.fn().mockResolvedValue({ accountVersion: 2, state: "cancelled" }),
   sendRound: vi.fn().mockResolvedValue({ roundId: "round-1", accountVersion: 2 }),
   ...overrides,
 });
