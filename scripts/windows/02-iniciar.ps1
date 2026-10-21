@@ -3,7 +3,7 @@
 .SYNOPSIS
 Levanta AntojitOS con las imagenes ya instaladas, sin Internet.
 .DESCRIPTION
-El instalador registra este script como tarea. -RegisterAutoStart registra o
+El instalador registra final_script.ps1 -Action Start como tarea. -RegisterAutoStart registra o
 repara la tarea; Startup requiere la contrasena real de la cuenta Windows,
 Logon arranca al entrar al escritorio. Ejecutar con la cuenta de instalacion.
 .EXAMPLE
@@ -16,13 +16,14 @@ param(
     [string]$InstallPath,
     [switch]$RegisterAutoStart,
     [switch]$ForceRegister,
+    [switch]$Managed,
     [ValidateSet('Startup', 'Logon')][string]$AutoStartMode = 'Startup'
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
 $operation = $null
 try {
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
     Assert-AntojitWindows
     Assert-AntojitAdministrator
     $installation = Get-AntojitInstallation -InstallPath (Resolve-AntojitInstallPath -InstallPath $InstallPath)
@@ -32,13 +33,19 @@ try {
     Assert-AntojitNoPendingUpdate -Installation $installation
     if ($RegisterAutoStart) {
         $taskName = 'AntojitOS-Inicio'
-        $scriptPath = Join-Path $installation.Root 'scripts\windows\02-iniciar.ps1'
+        $scriptPath = Join-Path $installation.Root 'final_script.ps1'
+        if ($installation.PSObject.Properties['LauncherPath'] -and $installation.LauncherPath) { $scriptPath = [string]$installation.LauncherPath }
+        $rootScriptPath = Join-Path $installation.Root 'final_script.ps1'
+        $legacyScriptPath = Join-Path $installation.Root 'scripts\windows\02-iniciar.ps1'
         $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -InstallPath "{1}"' -f $scriptPath, $installation.Root
+        $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Action Start -Unattended -InstallPath "{1}"' -f $scriptPath, $installation.Root
+        $legacyArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -InstallPath "{1}"' -f $legacyScriptPath, $installation.Root
+        $rootArguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Action Start -Unattended -InstallPath "{1}"' -f $rootScriptPath, $installation.Root
         $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
         $sameTask = $false
+        $compatibleLegacyTask = $false
         if ($existing) {
-            if ($existing.Actions[0].Arguments -ne $arguments) {
+            if (@($existing.Actions).Count -ne 1 -or ($existing.Actions[0].Arguments -cne $arguments -and $existing.Actions[0].Arguments -cne $legacyArguments -and $existing.Actions[0].Arguments -cne $rootArguments)) {
                 throw 'Ya existe una tarea AntojitOS-Inicio para otra ubicacion. Revisa esa instalacion antes de sustituirla.'
             }
             $expectedType = if ($AutoStartMode -eq 'Startup') { 'MSFT_TaskBootTrigger' } else { 'MSFT_TaskLogonTrigger' }
@@ -49,10 +56,18 @@ try {
                 $account = New-Object Security.Principal.NTAccount($principalAccount)
                 $principalSid = $account.Translate([Security.Principal.SecurityIdentifier]).Value
             }
-            $sameTask = ($existing.Triggers[0].CimClass.CimClassName -eq $expectedType -and
+            $sameTaskSettings = (@($existing.Triggers).Count -eq 1 -and $existing.Triggers[0].CimClass.CimClassName -eq $expectedType -and
                 [string]$existing.Principal.LogonType -eq $expectedLogon -and $existing.State -ne 'Disabled' -and
                 $principalSid -eq $installation.OwnerSid -and [string]$existing.Principal.RunLevel -eq 'Highest' -and
                 $existing.Actions[0].Execute -ieq $powershell -and $existing.Actions[0].WorkingDirectory -ieq $installation.Root)
+            $sameTask = ($sameTaskSettings -and $existing.Actions[0].Arguments -ceq $arguments)
+            $compatibleLegacyTask = ($sameTaskSettings -and -not $sameTask -and ($existing.Actions[0].Arguments -ceq $legacyArguments -or $existing.Actions[0].Arguments -ceq $rootArguments))
+        }
+        if ($compatibleLegacyTask -and -not $ForceRegister) {
+            $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $installation.Root
+            Set-ScheduledTask -TaskName $taskName -Action $action | Out-Null
+            $sameTask = $true
+            Write-AntojitLog 'La tarea existente ahora inicia final_script.ps1. Se conservaron sus credenciales y horario.'
         }
         if (-not $sameTask -or $ForceRegister) {
             $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $installation.Root
@@ -94,9 +109,14 @@ try {
     if ($health.status -ne 'ready' -or $health.database -ne 'connected') { throw 'La direccion publica aun no esta lista.' }
     Write-AntojitLog "AntojitOS disponible en http://localhost:$($installation.HttpPort)."
 } catch {
-    Write-AntojitLog ('ERROR: ' + $_.Exception.Message)
+    if (Get-Command Write-AntojitError -ErrorAction SilentlyContinue) {
+        Write-AntojitError -ErrorRecord $_
+    } else {
+        Write-Error -ErrorRecord $_ -ErrorAction Continue
+    }
+    if ($Managed) { throw }
     exit 1
 } finally {
     if ($operation) { $operation.Dispose() }
 }
-exit 0
+if (-not $Managed) { exit 0 }

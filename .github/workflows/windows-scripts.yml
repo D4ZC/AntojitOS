@@ -18,7 +18,7 @@ jobs:
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = @(Get-ChildItem scripts/windows -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' })
+          $files = @(Get-Item final_script.ps1) + @(Get-ChildItem scripts/windows -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' })
           if ($files.Count -eq 0) { throw 'No Windows scripts found.' }
           $invalid = $false
           foreach ($file in $files) {
@@ -35,7 +35,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          $files = @(Get-ChildItem scripts/windows -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' })
+          $files = @(Get-Item final_script.ps1) + @(Get-ChildItem scripts/windows -Recurse -File | Where-Object { $_.Extension -in '.ps1', '.psm1' })
           if ($files.Count -eq 0) { throw 'No Windows scripts found.' }
           $invalid = $false
           foreach ($file in $files) {

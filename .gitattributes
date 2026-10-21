@@ -2,3 +2,5 @@
 *.sh text eol=lf
 *.envsh text eol=lf
 Containerfile text eol=lf
+# Keep the double-click Windows launcher compatible with cmd.exe.
+*.cmd text eol=crlf

@@ -33,12 +33,12 @@ param(
     [string]$InstallPath,
     [string]$RepositoryUrl,
     [string]$Branch,
-    [switch]$ConfirmMaintenance
+    [switch]$ConfirmMaintenance,
+    [switch]$Managed
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force
 
 function Test-UpdateRepositoryUrl {
     param([string]$Value)
@@ -105,6 +105,7 @@ $script:UpdateHooksDirectory = $null
 $exitCode = 0
 
 try {
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
     Assert-AntojitWindows
     Assert-AntojitAdministrator
     $resolvedInstallPath = Resolve-AntojitInstallPath -InstallPath $InstallPath
@@ -196,6 +197,7 @@ try {
             $installation.Branch = $Branch
             Save-AntojitInstallation -Installation $installation
             Write-AntojitLog -Message 'La aplicacion ya tiene el ultimo commit. No fue necesario detener servicios.'
+            if ($Managed) { return }
             exit 0
         }
     }
@@ -310,8 +312,12 @@ try {
 }
 catch {
     $exitCode = 1
-    $failureMessage = $_.Exception.Message
-    Write-AntojitLog -Message "Error al actualizar: $failureMessage"
+    $updateError = $_
+    if (Get-Command Write-AntojitError -ErrorAction SilentlyContinue) {
+        Write-AntojitError -ErrorRecord $updateError
+    } else {
+        Write-Error -ErrorRecord $updateError -ErrorAction Continue
+    }
     if ($servicesStopped -and -not $mayHaveMigrated) {
         try {
             Invoke-AntojitCompose -Installation $installation -Arguments @('start', 'api', 'web', 'print-agent')
@@ -326,11 +332,11 @@ catch {
     if ($mayHaveMigrated) {
         Write-Warning 'La nueva API pudo haber aplicado migraciones. Revisa el error antes de reintentar; la recuperacion de codigo y datos debe planearse con el respaldo, sin restauracion automatica.'
     }
-    Write-Error -Message $failureMessage -ErrorAction Continue
     if ($null -ne $backupDirectory) { Write-Warning "Configuracion y respaldos conservados en: $backupDirectory" }
     if ($null -ne $pendingPath -and (Test-Path -LiteralPath $pendingPath)) {
         Write-Warning "Estado pendiente: $pendingPath. El siguiente intento con -ConfirmMaintenance reintentara el despliegue aunque Git ya tenga ese commit."
     }
+    if ($Managed) { throw $updateError }
 }
 finally {
     if ($null -ne $script:UpdateHooksDirectory -and (Test-Path -LiteralPath $script:UpdateHooksDirectory)) {
@@ -338,4 +344,4 @@ finally {
     }
     if ($null -ne $operationLock) { $operationLock.Dispose() }
 }
-exit $exitCode
+if (-not $Managed) { exit $exitCode }

@@ -9,6 +9,7 @@ BeforeAll {
         param($TaskName, $Action, $Trigger, $Settings, $Principal, $User, $Password, $RunLevel, [switch]$Force)
         throw 'Task Scheduler must be mocked.'
     }
+    function Set-ScheduledTask { param($TaskName, $Action) throw 'Task Scheduler must be mocked.' }
     function New-ScheduledTaskAction {
         param($Execute, $Argument, $WorkingDirectory)
         throw 'Task Scheduler must be mocked.'
@@ -25,6 +26,30 @@ BeforeAll {
     function New-ScheduledTaskPrincipal {
         param($UserId, $LogonType, $RunLevel)
         throw 'Task Scheduler must be mocked.'
+    }
+    function New-StartupTaskFixture {
+        param([string]$Root, [string]$OwnerSid, [switch]$Legacy)
+        if ($Legacy) {
+            $scriptPath = Join-Path $Root 'scripts\windows\02-iniciar.ps1'
+            $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -InstallPath "{1}"' -f $scriptPath, $Root
+        } else {
+            $scriptPath = Join-Path $Root 'final_script.ps1'
+            $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -Action Start -Unattended -InstallPath "{1}"' -f $scriptPath, $Root
+        }
+        [pscustomobject]@{
+            State = 'Ready'
+            Actions = @([pscustomobject]@{
+                Execute = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
+                Arguments = $arguments
+                WorkingDirectory = $Root
+            })
+            Triggers = @([pscustomobject]@{ CimClass = [pscustomobject]@{ CimClassName = 'MSFT_TaskBootTrigger' } })
+            Principal = [pscustomobject]@{
+                UserId = $OwnerSid
+                LogonType = 'Password'
+                RunLevel = 'Highest'
+            }
+        }
     }
 }
 
@@ -62,6 +87,7 @@ Describe 'Daily startup entry point' {
         Mock Install-AntojitDependencies { throw 'Daily startup must not install dependencies.' }
         Mock Get-ScheduledTask { throw 'Daily startup must not read or register a scheduled task.' }
         Mock Register-ScheduledTask { throw 'Daily startup must not register a scheduled task.' }
+        Mock Set-ScheduledTask { throw 'Daily startup must not change a scheduled task.' }
         Mock New-ScheduledTaskAction {
             param($Execute, $Argument, $WorkingDirectory)
             [pscustomobject]@{ Execute = $Execute; Arguments = $Argument; WorkingDirectory = $WorkingDirectory }
@@ -104,6 +130,14 @@ Describe 'Daily startup entry point' {
         Should -Invoke Update-AntojitNetwork -Times 0 -Exactly
     }
 
+    It 'returns control to the unified launcher on success and throws the original failure in managed mode' {
+        & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -Managed
+        Should -Invoke Invoke-AntojitPilot -Times 1 -Exactly -ParameterFilter { $Command -eq 'start' }
+        Mock Initialize-AntojitRuntime { throw 'Managed engine failure.' }
+        { & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -Managed } | Should -Throw '*Managed engine failure*'
+        $global:AntojitStartupTestLease.CanWrite | Should -BeFalse
+    }
+
     It 'registers a logon task only when requested and does not request a password' {
         Mock Get-ScheduledTask { $null }
         Mock Register-ScheduledTask { }
@@ -113,11 +147,26 @@ Describe 'Daily startup entry point' {
             $TaskName -eq 'AntojitOS-Inicio' -and
                 $Principal.UserId -eq 'FIXTURE\Restaurant' -and
                 $Principal.LogonType -eq 'Interactive' -and
-                $Action.WorkingDirectory -eq $global:AntojitStartupTestInstallation.Root
+                $Action.WorkingDirectory -eq $global:AntojitStartupTestInstallation.Root -and
+                $Action.Arguments -like '*final_script.ps1" -Action Start -Unattended -InstallPath*'
         }
         Should -Invoke Get-Credential -Times 0 -Exactly
         Should -Invoke Save-AntojitInstallation -Times 1 -Exactly
         $global:AntojitStartupTestInstallation.AutoStartMode | Should -Be 'Logon'
+    }
+
+    It 'registers the stored repair launcher while keeping the installed application as the working directory' {
+        $launcher = Join-Path $TestDrive 'program data\launcher\final_script.ps1'
+        $global:AntojitStartupTestInstallation | Add-Member -NotePropertyName LauncherPath -NotePropertyValue $launcher
+        Mock Get-ScheduledTask { $null }
+        Mock Register-ScheduledTask { }
+        & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -RegisterAutoStart -AutoStartMode Logon
+        $LASTEXITCODE | Should -Be 0
+        Should -Invoke Register-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+            $Action.Arguments.Contains(('"{0}" -Action Start -Unattended' -f $global:AntojitStartupTestInstallation.LauncherPath)) -and
+                $Action.WorkingDirectory -eq $global:AntojitStartupTestInstallation.Root
+        }
+        Should -Invoke Get-Credential -Times 0 -Exactly
     }
 
     It 'stops registration when the startup credential dialog is cancelled' {
@@ -133,29 +182,52 @@ Describe 'Daily startup entry point' {
 
     It 'preserves a matching startup task without requesting its stored password again' {
         Mock Get-ScheduledTask {
-            $root = $global:AntojitStartupTestInstallation.Root
-            $scriptPath = Join-Path $root 'scripts\windows\02-iniciar.ps1'
-            $arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -InstallPath "{1}"' -f $scriptPath, $root
-            [pscustomobject]@{
-                State = 'Ready'
-                Actions = @([pscustomobject]@{
-                    Execute = (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe')
-                    Arguments = $arguments
-                    WorkingDirectory = $root
-                })
-                Triggers = @([pscustomobject]@{ CimClass = [pscustomobject]@{ CimClassName = 'MSFT_TaskBootTrigger' } })
-                Principal = [pscustomobject]@{
-                    UserId = $global:AntojitStartupTestInstallation.OwnerSid
-                    LogonType = 'Password'
-                    RunLevel = 'Highest'
-                }
-            }
+            New-StartupTaskFixture -Root $global:AntojitStartupTestInstallation.Root -OwnerSid $global:AntojitStartupTestInstallation.OwnerSid
         }
         & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -RegisterAutoStart -AutoStartMode Startup
         $LASTEXITCODE | Should -Be 0
         Should -Invoke Register-ScheduledTask -Times 0 -Exactly
+        Should -Invoke Set-ScheduledTask -Times 0 -Exactly
         Should -Invoke Get-Credential -Times 0 -Exactly
         Should -Invoke Save-AntojitInstallation -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitPilot -Times 1 -Exactly -ParameterFilter { $Command -eq 'start' }
+    }
+
+    It 'migrates a compatible legacy task action while preserving its stored credentials and trigger' {
+        Mock Get-ScheduledTask {
+            New-StartupTaskFixture -Root $global:AntojitStartupTestInstallation.Root -OwnerSid $global:AntojitStartupTestInstallation.OwnerSid -Legacy
+        }
+        Mock Set-ScheduledTask { }
+        & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -RegisterAutoStart -AutoStartMode Startup
+        $LASTEXITCODE | Should -Be 0
+        Should -Invoke Set-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+            $TaskName -eq 'AntojitOS-Inicio' -and
+                $Action.Arguments -like '*final_script.ps1" -Action Start -Unattended -InstallPath*' -and
+                $Action.WorkingDirectory -eq $global:AntojitStartupTestInstallation.Root
+        }
+        Should -Invoke Register-ScheduledTask -Times 0 -Exactly
+        Should -Invoke Get-Credential -Times 0 -Exactly
+        Should -Invoke New-ScheduledTaskTrigger -Times 0 -Exactly
+        Should -Invoke Save-AntojitInstallation -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitPilot -Times 1 -Exactly -ParameterFilter { $Command -eq 'start' }
+    }
+
+    It 'migrates a root wrapper action to the stored repair launcher without replacing task credentials' {
+        $launcher = Join-Path $TestDrive 'program data\launcher\final_script.ps1'
+        $global:AntojitStartupTestInstallation | Add-Member -NotePropertyName LauncherPath -NotePropertyValue $launcher
+        Mock Get-ScheduledTask {
+            New-StartupTaskFixture -Root $global:AntojitStartupTestInstallation.Root -OwnerSid $global:AntojitStartupTestInstallation.OwnerSid
+        }
+        Mock Set-ScheduledTask { }
+        & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -RegisterAutoStart -AutoStartMode Startup
+        $LASTEXITCODE | Should -Be 0
+        Should -Invoke Set-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+            $Action.Arguments.Contains(('"{0}" -Action Start -Unattended' -f $global:AntojitStartupTestInstallation.LauncherPath)) -and
+                $Action.WorkingDirectory -eq $global:AntojitStartupTestInstallation.Root
+        }
+        Should -Invoke Register-ScheduledTask -Times 0 -Exactly
+        Should -Invoke Get-Credential -Times 0 -Exactly
+        Should -Invoke New-ScheduledTaskTrigger -Times 0 -Exactly
         Should -Invoke Invoke-AntojitPilot -Times 1 -Exactly -ParameterFilter { $Command -eq 'start' }
     }
 

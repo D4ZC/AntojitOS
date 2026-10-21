@@ -39,10 +39,16 @@ pnpm pilot:seed
 
 La PWA queda en `http://localhost:8080`; la guía de operación y recuperación está en [`docs/phase-5a/EJECUCION_PILOTO.md`](docs/phase-5a/EJECUCION_PILOTO.md).
 
-En una PC nueva con Windows 11 x64, los tres scripts de [`scripts/windows`](scripts/windows)
-instalan y configuran el sistema, registran el arranque automático y descargan actualizaciones
-desde una URL de GitHub configurable. Los comandos, requisitos y recuperación están en
-[`docs/phase-5a/WINDOWS.md`](docs/phase-5a/WINDOWS.md).
+En una PC nueva con Windows 11 x64, conservar la carpeta completa del proyecto y abrir
+[`final_script.cmd`](final_script.cmd) con doble clic. Su menú instala y configura el sistema,
+registra el arranque automático, inicia la aplicación y permite actualizar desde GitHub cuando
+se proporcione la URL. La ventana permanece abierta para revisar el resultado y muestra la
+carpeta de registros de esa ejecución.
+
+La misma entrada se puede usar desde PowerShell con [`final_script.ps1`](final_script.ps1).
+Los requisitos, parámetros, registros y recuperación están en
+[`docs/phase-5a/WINDOWS.md`](docs/phase-5a/WINDOWS.md). La instalación y el reinicio completos
+todavía requieren validación en una PC Windows real.
 
 ## Validación
 

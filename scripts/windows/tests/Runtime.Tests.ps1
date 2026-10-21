@@ -66,7 +66,7 @@ Describe 'Daily Podman runtime startup' {
 
         It 'requires the installer when the machine is missing' {
             $script:RuntimeMachineList = '[]'
-            { Initialize-AntojitRuntime -Installation $script:RuntimeInstallation -TimeoutSeconds 0 } | Should -Throw '*01-instalar.ps1*'
+            { Initialize-AntojitRuntime -Installation $script:RuntimeInstallation -TimeoutSeconds 0 } | Should -Throw '*final_script.cmd*'
             Should -Invoke Invoke-AntojitCommand -Times 0 -Exactly -ParameterFilter {
                 $Arguments[0] -eq 'info' -or $Arguments[1] -ne 'list'
             }
@@ -126,14 +126,14 @@ Describe 'Checked native execution and operation locking' {
         (Get-Location).Path | Should -Be $before
     }
 
-    It 'captures native output while allowing stderr from a successful command' {
+    It 'captures stdout while allowing stderr from a successful command' {
         $command = '[Console]::Out.WriteLine("ready"); [Console]::Error.WriteLine("diagnostic"); exit 0'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
         $output = @(Invoke-AntojitCommand -FilePath $script:NativeTestExecutable -Capture -Arguments @(
             '-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded
         ))
         $output | Should -Contain 'ready'
-        $output | Should -Contain 'diagnostic'
+        $output | Should -Not -Contain 'diagnostic'
     }
 
     It 'blocks a concurrent operation and permits retry after disposal' {

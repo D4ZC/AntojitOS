@@ -6,15 +6,36 @@ $script:AntojitLogPath = $null
 
 function Start-AntojitLog {
     param([Parameter(Mandatory)][string]$Path)
+    $Path = [IO.Path]::GetFullPath($Path)
     New-Item -ItemType Directory -Path (Split-Path -Parent $Path) -Force | Out-Null
     $script:AntojitLogPath = $Path
+    $env:ANTOJITOS_LOG_PATH = $Path
+    Write-AntojitLog -Message "[LOG] Registro de esta operacion: $Path"
 }
 
 function Write-AntojitLog {
-    param([Parameter(Mandatory)][string]$Message)
-    $line = '{0} {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Message
-    Write-Host $line
-    if ($script:AntojitLogPath) { Add-Content -LiteralPath $script:AntojitLogPath -Value $line -Encoding UTF8 }
+    param([Parameter(Mandatory)][AllowEmptyString()][string]$Message)
+    Write-AntojitDiagnostic -Message $Message
+}
+
+function Get-AntojitLogPath {
+    if ($script:AntojitLogPath) { return $script:AntojitLogPath }
+    if ($env:ANTOJITOS_LOG_PATH) { return $env:ANTOJITOS_LOG_PATH }
+    if ($env:ANTOJITOS_SESSION_LOG_PATH) { return $env:ANTOJITOS_SESSION_LOG_PATH }
+    return $null
+}
+
+function Write-AntojitError {
+    param([Parameter(Mandatory)][Management.Automation.ErrorRecord]$ErrorRecord)
+    $details = New-Object 'System.Collections.Generic.List[string]'
+    $details.Add('[ERROR] ' + $ErrorRecord.ToString())
+    if ($ErrorRecord.Exception) { $details.Add('[EXCEPTION] ' + $ErrorRecord.Exception.ToString()) }
+    if ($ErrorRecord.FullyQualifiedErrorId) { $details.Add('[ERROR ID] ' + $ErrorRecord.FullyQualifiedErrorId) }
+    if ($ErrorRecord.CategoryInfo) { $details.Add('[CATEGORY] ' + $ErrorRecord.CategoryInfo.ToString()) }
+    if ($ErrorRecord.ErrorDetails -and $ErrorRecord.ErrorDetails.Message) { $details.Add('[DETAILS] ' + $ErrorRecord.ErrorDetails.Message) }
+    if ($ErrorRecord.InvocationInfo -and $ErrorRecord.InvocationInfo.PositionMessage) { $details.Add('[POSITION] ' + $ErrorRecord.InvocationInfo.PositionMessage) }
+    if ($ErrorRecord.ScriptStackTrace) { $details.Add('[STACK] ' + $ErrorRecord.ScriptStackTrace) }
+    Write-AntojitLog -Message ($details -join [Environment]::NewLine)
 }
 
 function Invoke-AntojitCommand {
@@ -24,25 +45,50 @@ function Invoke-AntojitCommand {
         [string]$WorkingDirectory,
         [switch]$Capture
     )
-    if ($WorkingDirectory) { Push-Location -LiteralPath $WorkingDirectory }
+    $shownArguments = @($Arguments | ForEach-Object {
+        if ($_ -match '[\s"]' -or $_.Length -eq 0) { '"' + $_.Replace('"', '\"') + '"' }
+        else { $_ }
+    }) -join ' '
+    $command = ConvertTo-AntojitLogText -Text ('"{0}" {1}' -f $FilePath, $shownArguments)
+    $output = New-Object 'System.Collections.Generic.List[string]'
+    $locationPushed = $false
+    $code = $null
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    Write-AntojitLog -Message "[CMD] $command"
     try {
+        if ($WorkingDirectory) { Push-Location -LiteralPath $WorkingDirectory; $locationPushed = $true }
+        Write-AntojitLog -Message "[CWD] $((Get-Location).Path)"
         # Windows PowerShell turns native stderr into ErrorRecords. Check the exit
         # code, rather than interpreting a successful program's stderr as failure.
         $previousPreference = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try {
             $global:LASTEXITCODE = $null
-            if ($Capture) { $output = @(& $FilePath @Arguments 2>&1) }
-            else { & $FilePath @Arguments 2>&1 | ForEach-Object { Write-Host $_.ToString() } }
+            & $FilePath @Arguments 2>&1 | ForEach-Object {
+                $text = $_.ToString()
+                $stream = if ($_ -is [Management.Automation.ErrorRecord]) { 'stderr' } else { 'stdout' }
+                # JSON and other machine-readable captures contain stdout only;
+                # successful tools can also emit warnings on stderr.
+                if ($Capture -and $stream -eq 'stdout') { $output.Add($text) }
+                Write-AntojitLog -Message "[$stream] $text"
+            }
             $code = $global:LASTEXITCODE
         } finally { $ErrorActionPreference = $previousPreference }
         if ($null -eq $code -or $code -ne 0) {
-            if ($Capture) { $output | ForEach-Object { Write-Host $_.ToString() } }
-            throw "$(Split-Path -Leaf $FilePath) termino con codigo $code."
+            $status = if ($null -eq $code) { 'sin codigo de salida' } else { [string]$code }
+            throw "El comando $command termino con codigo $status."
         }
-        if ($Capture) { return @($output | ForEach-Object { $_.ToString() }) }
-    } finally {
-        if ($WorkingDirectory) { Pop-Location }
+        if ($Capture) { return @($output.ToArray()) }
+    }
+    catch {
+        Write-AntojitError -ErrorRecord $_
+        throw
+    }
+    finally {
+        $timer.Stop()
+        $status = if ($null -eq $code) { 'sin codigo de salida' } else { [string]$code }
+        Write-AntojitLog -Message ("[EXIT] {0}; {1:N1} s; {2}" -f $status, $timer.Elapsed.TotalSeconds, $command)
+        if ($locationPushed) { Pop-Location }
     }
 }
 
@@ -95,7 +141,7 @@ function Get-AntojitInstallation {
     param([Parameter(Mandatory)][string]$InstallPath)
     $root = [System.IO.Path]::GetFullPath($InstallPath).TrimEnd('\', '/')
     $path = Join-Path $root 'var\windows\installation.json'
-    if (-not (Test-Path -LiteralPath $path)) { throw 'Falta la instalacion de Windows. Ejecuta primero 01-instalar.ps1.' }
+    if (-not (Test-Path -LiteralPath $path)) { throw 'Falta la instalacion de Windows. Ejecuta final_script.cmd y elige 1 (Instalar).' }
     $installation = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
     if ($installation.Version -ne 1 -or $installation.Engine -ne 'podman') { throw 'Configuracion Windows incompatible.' }
     if (-not [string]::Equals($root.TrimEnd('\'), $installation.Root.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
@@ -113,7 +159,7 @@ function Resolve-AntojitInstallPath {
     param([string]$InstallPath)
     if ($InstallPath) { return [IO.Path]::GetFullPath($InstallPath).TrimEnd('\', '/') }
     $location = Join-Path $env:ProgramData 'AntojitOS\installation-location.json'
-    if (-not (Test-Path -LiteralPath $location)) { throw 'No se encontro la instalacion. Ejecuta primero 01-instalar.ps1.' }
+    if (-not (Test-Path -LiteralPath $location)) { throw 'No se encontro la instalacion. Ejecuta final_script.cmd y elige 1 (Instalar).' }
     $record = Get-Content -LiteralPath $location -Raw | ConvertFrom-Json
     return [IO.Path]::GetFullPath([string]$record.Root).TrimEnd('\', '/')
 }
@@ -139,16 +185,16 @@ function Assert-AntojitOwner {
 function Assert-AntojitNoPendingUpdate {
     param([Parameter(Mandatory)]$Installation)
     if (Test-Path -LiteralPath (Join-Path $Installation.StateDirectory 'update-pending.json')) {
-        throw 'Hay una actualizacion pendiente. Resuelvela con 03-actualizar.ps1 antes de iniciar o reinstalar: algunas imagenes pueden haber cambiado.'
+        throw 'Hay una actualizacion pendiente. Ejecuta final_script.cmd y elige 4 (Actualizar) antes de iniciar o reinstalar: algunas imagenes pueden haber cambiado.'
     }
 }
 
 function Initialize-AntojitRuntime {
     param([Parameter(Mandatory)]$Installation, [switch]$AllowCreate, [int]$TimeoutSeconds = 180)
     Update-AntojitPath
-    if (-not (Test-Path -LiteralPath $Installation.ComposeProviderPath)) { throw 'Falta el proveedor Compose. Repite 01-instalar.ps1.' }
+    if (-not (Test-Path -LiteralPath $Installation.ComposeProviderPath)) { throw 'Falta el proveedor Compose. Ejecuta final_script.cmd y elige 1 (Instalar).' }
     $podman = Get-AntojitPodman
-    if (-not $podman) { throw 'No se encontro Podman. Repite 01-instalar.ps1.' }
+    if (-not $podman) { throw 'No se encontro Podman. Ejecuta final_script.cmd y elige 1 (Instalar).' }
     $env:CONTAINER_ENGINE = $podman
     $env:CONTAINERS_MACHINE_PROVIDER = 'wsl'
     $env:CONTAINER_CONNECTION = $Installation.MachineName
@@ -160,7 +206,7 @@ function Initialize-AntojitRuntime {
     $entries = @($machines | ConvertFrom-Json)
     $found = @($entries | Where-Object { $_.Name -eq $Installation.MachineName })
     if ($found.Count -eq 0) {
-        if (-not $AllowCreate) { throw 'La maquina Podman no existe. Ejecuta 01-instalar.ps1; el inicio diario no crea ni reinstala componentes.' }
+        if (-not $AllowCreate) { throw 'La maquina Podman no existe. Ejecuta final_script.cmd y elige 1 (Instalar); el inicio diario no crea ni reinstala componentes.' }
         Invoke-AntojitCommand -FilePath $podman -Arguments @('machine', 'init', '--rootful=false', $Installation.MachineName)
     }
     $details = @(Invoke-AntojitCommand -FilePath $podman -Arguments @('machine', 'inspect', $Installation.MachineName) -Capture) -join "`n"
@@ -176,7 +222,7 @@ function Initialize-AntojitRuntime {
             $os = @(Invoke-AntojitCommand -FilePath $podman -Arguments @('info', '--format', '{{.Host.OS}}') -Capture) -join ''
             if ($os.Trim() -eq 'linux') { return }
         } catch {
-            if ((Get-Date) -ge $deadline) { throw 'Podman no estuvo listo a tiempo. Revisa WSL y vuelve a ejecutar 02-iniciar.ps1.' }
+            if ((Get-Date) -ge $deadline) { throw 'Podman no estuvo listo a tiempo. Revisa WSL, ejecuta final_script.cmd y elige 2 (Iniciar).' }
         }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
@@ -193,7 +239,7 @@ function Invoke-AntojitCompose {
 function Invoke-AntojitPilot {
     param([Parameter(Mandatory)][string]$Root, [Parameter(Mandatory)][string]$Command, [string[]]$Arguments = @())
     $node = Get-AntojitNode
-    if (-not $node) { throw 'Se requiere Node.js 24 o superior. Repite 01-instalar.ps1.' }
+    if (-not $node) { throw 'Se requiere Node.js 24 o superior. Ejecuta final_script.cmd y elige 1 (Instalar).' }
     Invoke-AntojitCommand -FilePath $node -Arguments (@((Join-Path $Root 'scripts\pilot.mjs'), $Command) + $Arguments) -WorkingDirectory $Root
 }
 
@@ -239,7 +285,7 @@ function Update-AntojitNetwork {
     }
 }
 
-Export-ModuleMember -Function Start-AntojitLog, Write-AntojitLog, Invoke-AntojitCommand, Enter-AntojitOperation,
+Export-ModuleMember -Function Start-AntojitLog, Write-AntojitLog, Get-AntojitLogPath, Write-AntojitError, Invoke-AntojitCommand, Enter-AntojitOperation,
     Protect-AntojitPath, Test-AntojitRepositoryUrl, Get-AntojitInstallation, Save-AntojitInstallation,
     Resolve-AntojitInstallPath,
     Assert-AntojitOwner, Assert-AntojitNoPendingUpdate, Initialize-AntojitRuntime, Invoke-AntojitCompose, Invoke-AntojitPilot,

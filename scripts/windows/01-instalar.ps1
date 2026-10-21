@@ -20,11 +20,11 @@ param(
     [ValidateRange(1, 65535)][int]$InternalHttpPort = 18080,
     [string]$PrinterHost,
     [ValidateRange(1, 65535)][int]$PrinterPort = 9100,
-    [ValidateSet('Startup', 'Logon')][string]$AutoStartMode = 'Startup'
+    [ValidateSet('Startup', 'Logon')][string]$AutoStartMode = 'Startup',
+    [switch]$Managed
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
 $bootstrapLock = $null
 $operation = $null
 
@@ -47,9 +47,61 @@ function Copy-AntojitSource {
     }
 }
 
+function Resolve-AntojitLauncher {
+    param([string]$SourceRoot, [string]$Root, [string]$BootstrapDirectory, [string]$OwnerSid, $Installation)
+    $files = @('final_script.ps1', 'scripts\windows\01-instalar.ps1', 'scripts\windows\02-iniciar.ps1',
+        'scripts\windows\03-actualizar.ps1', 'scripts\windows\AntojitOS.Windows.psm1', 'scripts\windows\AntojitOS.Dependencies.psm1')
+    $needsBundle = $false
+    foreach ($file in $files) {
+        $sourceFile = Join-Path $SourceRoot $file
+        $installedFile = Join-Path $Root $file
+        if (-not (Test-Path -LiteralPath $sourceFile -PathType Leaf)) { throw "Proyecto de preparacion incompleto: falta $sourceFile." }
+        if (-not (Test-Path -LiteralPath $installedFile -PathType Leaf)) { $needsBundle = $true; continue }
+        if ((Get-FileHash -LiteralPath $sourceFile).Hash -ne (Get-FileHash -LiteralPath $installedFile).Hash) { $needsBundle = $true }
+    }
+    if ($Installation.PSObject.Properties['LauncherPath'] -and $Installation.LauncherPath) { $needsBundle = $true }
+    if (-not $needsBundle) { return (Join-Path $Root 'final_script.ps1') }
+    # An earlier/partial installation may contain old helpers. Keep the new
+    # bootstrap outside its Git tree so updates still see an unchanged checkout.
+    $bundle = Join-Path $BootstrapDirectory 'launcher'
+    $staging = Join-Path $BootstrapDirectory ('launcher-stage-' + [guid]::NewGuid().ToString('N'))
+    $previous = Join-Path $BootstrapDirectory ('launcher-previous-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
+    Protect-AntojitPath -Path $staging -OwnerSid $OwnerSid
+    try {
+        foreach ($file in $files) {
+            $target = Join-Path $staging $file
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $SourceRoot $file) -Destination $target -Force
+        }
+        if (Test-Path -LiteralPath $bundle) { Move-Item -LiteralPath $bundle -Destination $previous }
+        try { Move-Item -LiteralPath $staging -Destination $bundle }
+        catch {
+            $launcherError = $_
+            if ((Test-Path -LiteralPath $previous) -and -not (Test-Path -LiteralPath $bundle)) {
+                try { Move-Item -LiteralPath $previous -Destination $bundle }
+                catch { Write-AntojitLog "No se pudo reponer el lanzador anterior. Se conserva en $previous. Repite la instalacion antes de reiniciar." }
+            }
+            throw $launcherError
+        }
+        if (Test-Path -LiteralPath $previous) {
+            try { Remove-Item -LiteralPath $previous -Recurse -Force }
+            catch { Write-AntojitLog "La copia anterior del lanzador se conserva en $previous." }
+        }
+    } finally {
+        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+    Write-AntojitLog "La instalacion anterior usara el lanzador actualizado en $bundle. Se conserva su codigo, configuracion y datos."
+    return (Join-Path $bundle 'final_script.ps1')
+}
+
 try {
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
     Assert-AntojitWindows
     Assert-AntojitAdministrator
+    if (-not $PSBoundParameters.ContainsKey('InstallPath') -and (Test-Path -LiteralPath (Join-Path $env:ProgramData 'AntojitOS\installation-location.json'))) {
+        $InstallPath = Resolve-AntojitInstallPath
+    }
     if ($HttpPort -eq $InternalHttpPort) { throw 'Los puertos publico e interno deben ser diferentes.' }
     if ($RepositoryUrl) { $RepositoryUrl = Test-AntojitRepositoryUrl $RepositoryUrl }
     $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\', '/')
@@ -113,7 +165,7 @@ try {
         # not represent those executable bits, which otherwise dirties the copy.
         Invoke-AntojitCommand -FilePath $tools.GitPath -Arguments @('-C', $root, 'config', 'core.filemode', 'false')
     }
-    foreach ($required in @('compose.pilot.yaml', 'Containerfile', '.env.pilot.example', 'scripts\pilot.mjs', 'scripts\windows\02-iniciar.ps1')) {
+    foreach ($required in @('compose.pilot.yaml', 'Containerfile', '.env.pilot.example', 'scripts\pilot.mjs')) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) { throw "El proyecto esta incompleto: falta $required." }
     }
     Protect-AntojitPath -Path $root -OwnerSid $owner.User.Value
@@ -163,6 +215,11 @@ try {
     }
     $installation.ComposeProviderPath = $tools.ComposeProviderPath
     $installation.AutoStartMode = $AutoStartMode
+    $launcher = Resolve-AntojitLauncher -SourceRoot ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..\..'))) `
+        -Root $root -BootstrapDirectory $bootstrapDirectory -OwnerSid $owner.User.Value -Installation $installation
+    if ($launcher -ine (Join-Path $root 'final_script.ps1')) {
+        $installation | Add-Member -NotePropertyName LauncherPath -NotePropertyValue $launcher -Force
+    }
     if ($RepositoryUrl) { $installation.RepositoryUrl = $RepositoryUrl }
     if ($Branch) {
         Invoke-AntojitCommand -FilePath $tools.GitPath -Arguments @('check-ref-format', '--branch', $Branch)
@@ -174,7 +231,7 @@ try {
         if ($installation.EnvironmentCreated) {
             throw 'Falta .env.pilot en una instalacion existente. Recupera su copia de respaldo para conservar las credenciales de la base.'
         }
-        Write-AntojitLog 'Generando secretos y codigos nuevos. Guarda los codigos que aparecen a continuacion.'
+        Write-AntojitLog 'Generando secretos y codigos nuevos. Se guardan en .env.pilot; consulta ese archivo de forma privada para verlos.'
         Invoke-AntojitPilot -Root $root -Command 'init'
     } else { Write-AntojitLog 'Se conserva la configuracion y los codigos existentes.' }
     $installation.EnvironmentCreated = $true
@@ -221,12 +278,9 @@ try {
     # Release the application lock before handing control to the startup script.
     $operation.Dispose()
     $operation = $null
-    $startScript = Join-Path $root 'scripts\windows\02-iniciar.ps1'
-    $powershell = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    # Use a child process: importing the startup module cannot replace functions
-    # and log state in this still-running installation script.
-    & $powershell -NoLogo -NoProfile -ExecutionPolicy Bypass -File $startScript -InstallPath $root -RegisterAutoStart -AutoStartMode $AutoStartMode
-    if ($LASTEXITCODE -ne 0) { throw 'Fallo el registro/inicio automatico. Revisa el registro de 02-iniciar.ps1.' }
+    $startScript = Join-Path (Split-Path -Parent $launcher) 'scripts\windows\02-iniciar.ps1'
+    # Keep all setup and registration errors in the same console and session log.
+    & $startScript -InstallPath $root -RegisterAutoStart -AutoStartMode $AutoStartMode -Managed
     $operation = Enter-AntojitOperation -Root $root
     $installation = Get-AntojitInstallation -InstallPath $root
     $installation.Completed = $true
@@ -234,14 +288,18 @@ try {
     Write-AntojitLog "Instalacion lista. Abre http://localhost:$($installation.HttpPort). Para las tablets usa la IP de esta PC y ese puerto."
     Write-AntojitLog 'La conexion del restaurante debe estar marcada como red privada en Windows.'
 } catch {
+    if (Get-Command Write-AntojitError -ErrorAction SilentlyContinue) { Write-AntojitError -ErrorRecord $_ }
+    else { Write-Host ($_ | Format-List * -Force | Out-String) }
     if ($_.Exception.Data['RestartRequired']) {
         Write-Host 'WSL necesita reiniciar Windows. Reinicia y vuelve a ejecutar el mismo comando de instalacion.'
+        if ($Managed) { throw }
         exit 3010
     }
+    if ($Managed) { throw }
     Write-Error -Message $_.Exception.Message -ErrorAction Continue
     exit 1
 } finally {
     if ($operation) { $operation.Dispose() }
     if ($bootstrapLock) { $bootstrapLock.Dispose() }
 }
-exit 0
+if (-not $Managed) { exit 0 }
