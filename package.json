@@ -14,7 +14,21 @@
     "dev:api": "pnpm --filter @antojit-os/api dev",
     "dev:pos": "pnpm --filter @antojit-os/pos dev",
     "dev:print-agent": "pnpm --filter @antojit-os/print-agent dev",
-    "test": "pnpm --filter @antojit-os/domain test && pnpm --filter @antojit-os/api test && pnpm --filter @antojit-os/pos test && pnpm --filter @antojit-os/print-agent test",
-    "test:offline": "node --test packages/domain/tests/order.node.test.mjs"
+    "pilot:init": "node scripts/pilot.mjs init",
+    "pilot:up": "node scripts/pilot.mjs up",
+    "pilot:start": "node scripts/pilot.mjs start",
+    "pilot:seed": "node scripts/pilot.mjs seed",
+    "pilot:ensure-seeded": "node scripts/pilot.mjs ensure-seeded",
+    "pilot:catalog": "node scripts/pilot.mjs catalog",
+    "pilot:status": "node scripts/pilot.mjs status",
+    "pilot:verify": "node scripts/pilot.mjs verify",
+    "pilot:logs": "node scripts/pilot.mjs logs",
+    "pilot:backup": "node scripts/pilot.mjs backup",
+    "pilot:verify-backup": "node scripts/pilot.mjs verify-backup",
+    "pilot:restore": "node scripts/pilot.mjs restore",
+    "pilot:down": "node scripts/pilot.mjs down",
+    "test": "pnpm --filter @antojit-os/domain test && pnpm --filter @antojit-os/api test && pnpm --filter @antojit-os/pos test && pnpm --filter @antojit-os/print-agent test && pnpm test:pilot",
+    "test:offline": "node --test packages/domain/tests/order.node.test.mjs",
+    "test:pilot": "node --test scripts/*.test.mjs"
   }
 }

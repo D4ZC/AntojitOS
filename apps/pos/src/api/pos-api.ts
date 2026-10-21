@@ -16,6 +16,7 @@ import type {
   Session,
   SalesReceipt,
   SalesReceiptSummary,
+  SeasonalProductChange,
   TerminalCredentials,
 } from "./types";
 
@@ -93,6 +94,34 @@ export class PosApi {
       "/v1/catalog",
     );
     return result.categories;
+  }
+
+  createSeasonalProduct(input: {
+    categoryId: string;
+    name: string;
+    priceInCents: number;
+  }): Promise<SeasonalProductChange> {
+    return this.request("/v1/catalog/products", {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  updateSeasonalProduct(
+    productId: string,
+    input: {
+      expectedVersion: number;
+      name?: string;
+      priceInCents?: number;
+      available?: boolean;
+    },
+  ): Promise<SeasonalProductChange> {
+    return this.request(`/v1/catalog/products/${productId}`, {
+      method: "PATCH",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
   }
 
   serviceLayout(): Promise<ServiceLayout> {
@@ -349,6 +378,7 @@ export class PosApi {
       quantity: number;
       expectedVersion: number;
       modifierIds?: string[];
+      note?: string;
     },
   ): Promise<{ accountVersion: number }> {
     return this.request(`/v1/accounts/${accountId}/items`, {

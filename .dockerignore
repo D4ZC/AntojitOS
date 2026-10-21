@@ -1,0 +1,13 @@
+.git
+.github
+.env
+.env.*
+!.env.example
+!.env.pilot.example
+**/dist
+**/node_modules
+**/var
+backups
+coverage
+*.log
+.DS_Store

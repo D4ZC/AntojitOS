@@ -1,0 +1,4 @@
+# The Linux container entrypoint must keep LF on Windows checkouts.
+*.sh text eol=lf
+*.envsh text eol=lf
+Containerfile text eol=lf

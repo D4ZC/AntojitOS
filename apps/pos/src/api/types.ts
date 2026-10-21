@@ -71,7 +71,18 @@ export interface CatalogCategory {
   code: string;
   name: string;
   color: string | null;
+  seasonal: boolean;
   products: CatalogProduct[];
+}
+
+export interface SeasonalProductChange {
+  product: {
+    id: string;
+    name: string;
+    priceInCents: number;
+    available: boolean;
+    version: number;
+  };
 }
 
 export interface ServiceTable {

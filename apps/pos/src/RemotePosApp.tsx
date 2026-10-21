@@ -22,10 +22,13 @@ import type {
   TerminalCredentials,
 } from "./api/types";
 import { formatMoney } from "./format";
+import { hasQuickNote, QUICK_NOTES, toggleQuickNote } from "./notes";
+import { OrderBuilder, type OrderBuilderLine } from "./OrderBuilder";
+import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
 
 const TERMINAL_STORAGE_KEY = "antojit-os.terminal.v1";
 
-export interface RemoteApi {
+export interface RemoteApi extends SeasonalMenuApi {
   setAccessToken(accessToken?: string): void;
   registerTerminal(input: {
     bootstrapToken: string;
@@ -133,6 +136,7 @@ export interface RemoteApi {
       quantity: number;
       expectedVersion: number;
       modifierIds?: string[];
+      note?: string;
     },
   ): Promise<{ accountVersion: number }>;
   updateItem(
@@ -202,8 +206,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState("Selecciona una mesa para comenzar");
   const [error, setError] = useState<string | null>(null);
-  const [modifierProduct, setModifierProduct] = useState<CatalogProduct | null>(null);
-  const [selectedModifierIds, setSelectedModifierIds] = useState<string[]>([]);
+  const [builder, setBuilder] = useState<{ category: CatalogCategory; product: CatalogProduct } | null>(null);
+  const [seasonalEditorOpen, setSeasonalEditorOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<RemoteOrderItem | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [cancellingItem, setCancellingItem] = useState<RemoteOrderItem | null>(null);
@@ -405,7 +409,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setError(messageFor(mutationError));
   };
 
-  const addProduct = async (product: CatalogProduct, modifierIds: string[] = []) => {
+  const addProduct = async (product: CatalogProduct) => {
     if (!account || busy) return;
     setBusy(true);
     setError(null);
@@ -414,12 +418,10 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         productId: product.id,
         quantity: 1,
         expectedVersion: account.version,
-        modifierIds,
+        modifierIds: [],
       });
       await refreshAccount(account.id);
       setNotice(`${product.name} agregado`);
-      setModifierProduct(null);
-      setSelectedModifierIds([]);
     } catch (addError) {
       await handleMutationError(addError);
     } finally {
@@ -427,7 +429,40 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
-  const chooseProduct = (product: CatalogProduct) => {
+  // Cada variante es un artículo independiente con su propia cantidad, opciones y nota,
+  // para que cocina vea "2 tostadas de pierna" y "1 sencilla" por separado.
+  const addLines = async (lines: OrderBuilderLine[]): Promise<string[]> => {
+    if (!account || busy) return [];
+    const added: string[] = [];
+    let expectedVersion = account.version;
+    setBusy(true);
+    setError(null);
+    try {
+      for (const line of lines) {
+        const result = await api.addItem(account.id, {
+          productId: line.product.id,
+          quantity: line.quantity,
+          expectedVersion,
+          modifierIds: line.modifierIds,
+          ...(line.note ? { note: line.note } : {}),
+        });
+        expectedVersion = result.accountVersion;
+        added.push(line.key);
+      }
+      await refreshAccount(account.id);
+      const pieces = lines.reduce((total, line) => total + line.quantity, 0);
+      setNotice(pieces === 1 ? `${lines[0]?.product.name} agregado` : `${pieces} productos agregados`);
+      setBuilder(null);
+    } catch (addError) {
+      if (added.length > 0) await refreshAccount(account.id).catch(() => undefined);
+      await handleMutationError(addError);
+    } finally {
+      setBusy(false);
+    }
+    return added;
+  };
+
+  const chooseProduct = (category: CatalogCategory, product: CatalogProduct) => {
     const hasOptions = product.modifierGroups.some((group) =>
       group.options.some((option) => option.available),
     );
@@ -435,30 +470,9 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
       void addProduct(product);
       return;
     }
-    setModifierProduct(product);
-    setSelectedModifierIds([]);
+    setError(null);
+    setBuilder({ category, product });
   };
-
-  const toggleModifier = (
-    group: CatalogProduct["modifierGroups"][number],
-    modifierId: string,
-  ) => {
-    setSelectedModifierIds((current) => {
-      if (current.includes(modifierId)) return current.filter((id) => id !== modifierId);
-      const groupIds = new Set(group.options.map((option) => option.id));
-      const selectedInGroup = current.filter((id) => groupIds.has(id));
-      const withoutGroup = current.filter((id) => !groupIds.has(id));
-      if (group.maximumSelections === 1) return [...withoutGroup, modifierId];
-      if (selectedInGroup.length >= group.maximumSelections) return current;
-      return [...current, modifierId];
-    });
-  };
-
-  const modifiersAreValid = modifierProduct?.modifierGroups.every((group) => {
-    const groupIds = new Set(group.options.map((option) => option.id));
-    const count = selectedModifierIds.filter((id) => groupIds.has(id)).length;
-    return count >= group.minimumSelections && count <= group.maximumSelections;
-  }) ?? false;
 
   const changeQuantity = async (item: RemoteOrderItem, quantity: number, note = item.note ?? "") => {
     if (!account || busy || quantity < 1) return;
@@ -1313,6 +1327,10 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const canDiscount = session.user.permissions.includes("service.account.discount");
   const canCreatePrecheck = session.user.permissions.includes("service.precheck.create");
   const canCapturePayment = session.user.permissions.includes("sales.payment.capture");
+  const canManageCatalog = session.user.permissions.includes("catalog.product.manage");
+  const seasonalCategory = seasonalEditorOpen
+    ? catalog.find((category) => category.id === activeCategory?.id && category.seasonal)
+    : undefined;
   const pendingCount = account.items
     .filter((item) => item.preparationState === "pending")
     .reduce((total, item) => total + item.quantity, 0);
@@ -1371,15 +1389,16 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <div className="section-heading">
             <div><span className="eyebrow">Menú</span><h1 id="menu-title">{activeCategory?.name ?? "Productos"}</h1></div>
             {busy && <span className="working-pill" role="status">Actualizando…</span>}
+            {activeCategory?.seasonal && canManageCatalog && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => setSeasonalEditorOpen(true)}>Editar platillos</button>}
           </div>
           <div className="product-grid">
-            {activeCategory?.products.map((product) => (
+            {activeCategory?.products.filter((product) => product.available || !activeCategory.seasonal).map((product) => (
               <button
                 className={`product-card tone-${product.color ?? "cream"}`}
                 key={product.id}
                 type="button"
                 disabled={!product.available || busy}
-                onClick={() => chooseProduct(product)}
+                onClick={() => chooseProduct(activeCategory, product)}
                 aria-label={`Agregar ${product.name}, ${formatMoney(product.priceInCents)}`}
               >
                 <span className="product-emoji" aria-hidden="true">{product.emoji ?? "🍽️"}</span>
@@ -1623,31 +1642,35 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         </div>
       )}
 
-      {modifierProduct && (
-        <div className="modal-backdrop" role="presentation">
-          <section className="touch-modal" role="dialog" aria-modal="true" aria-labelledby="modifier-title">
-            <div className="modal-heading"><div><span className="eyebrow">Personalizar</span><h2 id="modifier-title">{modifierProduct.name}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setModifierProduct(null)}>×</button></div>
-            {modifierProduct.modifierGroups.map((group) => (
-              <fieldset className="modifier-group" key={group.id}>
-                <legend>{group.name} <small>{group.minimumSelections > 0 ? `Elige de ${group.minimumSelections} a ${group.maximumSelections}` : `Opcional · máximo ${group.maximumSelections}`}</small></legend>
-                <div className="modifier-options">
-                  {group.options.filter((option) => option.available).map((option) => (
-                    <button className={selectedModifierIds.includes(option.id) ? "selected" : ""} type="button" key={option.id} aria-pressed={selectedModifierIds.includes(option.id)} onClick={() => toggleModifier(group, option.id)}>
-                      <span>{option.name}</span><small>{option.priceDeltaInCents === 0 ? "Sin costo" : `+ ${formatMoney(option.priceDeltaInCents)}`}</small>
-                    </button>
-                  ))}
-                </div>
-              </fieldset>
-            ))}
-            <div className="modal-actions"><button type="button" onClick={() => setModifierProduct(null)}>Cancelar</button><button className="access-primary" type="button" disabled={!modifiersAreValid || busy} onClick={() => void addProduct(modifierProduct, selectedModifierIds)}>Agregar a la orden</button></div>
-          </section>
-        </div>
+      {builder && (
+        <OrderBuilder
+          category={builder.category}
+          initialProduct={builder.product}
+          busy={busy}
+          error={error}
+          onClose={() => setBuilder(null)}
+          onSubmit={addLines}
+        />
+      )}
+
+      {seasonalCategory && (
+        <SeasonalMenuEditor
+          api={api}
+          category={seasonalCategory}
+          onChanged={loadServiceData}
+          onClose={() => setSeasonalEditorOpen(false)}
+        />
       )}
 
       {editingItem && (
         <div className="modal-backdrop" role="presentation">
           <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="note-title">
             <div className="modal-heading"><div><span className="eyebrow">Instrucción especial</span><h2 id="note-title">{editingItem.productName}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setEditingItem(null)}>×</button></div>
+            <div className="quick-notes" role="group" aria-label="Observaciones frecuentes">
+              {QUICK_NOTES.map((quickNote) => (
+                <button className={hasQuickNote(noteDraft, quickNote) ? "selected" : ""} type="button" key={quickNote} aria-pressed={hasQuickNote(noteDraft, quickNote)} onClick={() => setNoteDraft((draft) => toggleQuickNote(draft, quickNote))}>{quickNote}</button>
+              ))}
+            </div>
             <label>Nota para preparación<textarea value={noteDraft} maxLength={200} rows={4} autoFocus onChange={(event) => setNoteDraft(event.target.value)} /></label>
             <div className="modal-actions"><button type="button" onClick={() => setEditingItem(null)}>Cancelar</button><button className="access-primary" type="button" disabled={busy} onClick={() => void changeQuantity(editingItem, editingItem.quantity, noteDraft.trim())}>Guardar nota</button></div>
           </section>

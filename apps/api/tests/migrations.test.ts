@@ -59,6 +59,6 @@ describe("migraciones de fundación", () => {
     const applied = await database.query<{ count: string }>(
       "SELECT count(*)::text AS count FROM schema_migrations",
     );
-    expect(applied.rows[0]?.count).toBe("6");
+    expect(applied.rows[0]?.count).toBe("7");
   });
 });

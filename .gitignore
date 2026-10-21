@@ -5,7 +5,9 @@ coverage/
 .env
 .env.*
 !.env.example
+!.env.pilot.example
 *.log
 .pnpm-store/
 .vite/
 var/
+backups/

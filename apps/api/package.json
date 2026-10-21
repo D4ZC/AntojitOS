@@ -8,6 +8,7 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "db:migrate": "tsx src/database/migrate.ts",
     "db:seed": "tsx src/database/seed.ts",
+    "db:seed:catalog": "tsx src/database/seed-catalog.ts",
     "dev": "node --conditions=development --import tsx --watch src/main.ts",
     "start": "node dist/main.js",
     "test": "vitest run --config vitest.config.ts"

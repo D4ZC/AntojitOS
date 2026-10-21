@@ -11,6 +11,7 @@ interface CategoryRow extends DatabaseRow {
   name: string;
   color: string | null;
   display_order: number;
+  seasonal: boolean;
 }
 
 interface ProductRow extends DatabaseRow {
@@ -63,7 +64,7 @@ export class CatalogService {
   async catalog(siteId: string) {
     const [categories, products, modifiers] = await Promise.all([
       this.database.query<CategoryRow>(
-        `SELECT id, code, name, color, display_order
+        `SELECT id, code, name, color, display_order, seasonal
            FROM product_categories
           WHERE site_id = $1 AND active
           ORDER BY display_order, name`,
@@ -147,6 +148,7 @@ export class CatalogService {
         code: category.code,
         name: category.name,
         color: category.color,
+        seasonal: category.seasonal,
         products: products.rows
           .filter((product) => product.category_id === category.id)
           .map((product) => ({

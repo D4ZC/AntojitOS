@@ -38,6 +38,7 @@ const session: Session = {
       "sales.receipt.read",
       "sales.receipt.reprint",
       "sales.refund.create",
+      "catalog.product.manage",
     ],
   },
 };
@@ -47,6 +48,7 @@ const catalog: CatalogCategory[] = [{
   code: "ANTOJITOS",
   name: "Antojitos",
   color: "amber",
+  seasonal: false,
   products: [{
     id: "product-1",
     code: "QUESADILLA",
@@ -290,6 +292,12 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   updateItem: vi.fn().mockResolvedValue({ accountVersion: 2 }),
   cancelItem: vi.fn().mockResolvedValue({ accountVersion: 2, state: "cancelled" }),
   sendRound: vi.fn().mockResolvedValue({ roundId: "round-1", accountVersion: 2 }),
+  createSeasonalProduct: vi.fn().mockResolvedValue({
+    product: { id: "dish-2", name: "Pozole verde", priceInCents: 13_000, available: true, version: 0 },
+  }),
+  updateSeasonalProduct: vi.fn().mockResolvedValue({
+    product: { id: "dish-1", name: "Mole", priceInCents: 11_500, available: true, version: 2 },
+  }),
   ...overrides,
 });
 
@@ -398,6 +406,105 @@ describe("POS conectado", () => {
       modifierIds: [],
     });
     expect(api.sendRound).toHaveBeenCalledWith("account-1", 1);
+  });
+
+  it("arma varias tostadas con opciones, cantidad y observaciones por variante", async () => {
+    storeTerminal();
+    const tostadas: CatalogCategory = {
+      id: "category-tostadas",
+      code: "TOSTADAS",
+      name: "Tostadas",
+      color: "sun",
+      seasonal: false,
+      products: [
+        {
+          ...catalog[0]!.products[0]!,
+          id: "tostada",
+          code: "TOSTADA",
+          name: "Tostada",
+          shortName: "Tostada",
+          priceInCents: 3500,
+          modifierGroups: [{
+            id: "group-tostada",
+            name: "Preparación",
+            minimumSelections: 1,
+            maximumSelections: 1,
+            options: [
+              { id: "pierna", name: "Pierna", priceDeltaInCents: 0, available: true },
+              { id: "lengua", name: "Lengua", priceDeltaInCents: 0, available: true },
+            ],
+          }],
+        },
+        {
+          ...catalog[0]!.products[0]!,
+          id: "sencilla",
+          code: "TOSTADA-SENCILLA",
+          name: "Tostada sencilla",
+          shortName: "Sencilla",
+          priceInCents: 2000,
+        },
+      ],
+    };
+    const addItem = vi.fn()
+      .mockResolvedValueOnce({ accountVersion: 1 })
+      .mockResolvedValueOnce({ accountVersion: 2 });
+    const api = createApi({ catalog: vi.fn().mockResolvedValue([tostadas]), addItem });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: /agregar tostada, /i }));
+    const dialog = await screen.findByRole("dialog", { name: "Tostada" });
+    fireEvent.click(screen.getByRole("button", { name: /pierna/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Agregar una pieza" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sin cebolla" }));
+    fireEvent.click(screen.getByRole("button", { name: "+ Agregar otra variante" }));
+    expect(dialog).toHaveTextContent("Pierna · Sin cebolla");
+    fireEvent.click(screen.getByRole("button", { name: /^sencilla/i }));
+    fireEvent.click(screen.getByRole("button", { name: /agregar 3 a la orden/i }));
+
+    await waitFor(() => expect(addItem).toHaveBeenCalledTimes(2));
+    expect(addItem).toHaveBeenNthCalledWith(1, "account-1", {
+      productId: "tostada",
+      quantity: 2,
+      expectedVersion: 0,
+      modifierIds: ["pierna"],
+      note: "Sin cebolla",
+    });
+    expect(addItem).toHaveBeenNthCalledWith(2, "account-1", {
+      productId: "sencilla",
+      quantity: 1,
+      expectedVersion: 1,
+      modifierIds: [],
+    });
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("permite al administrador cambiar el precio de un platillo del día", async () => {
+    storeTerminal();
+    const platillos: CatalogCategory = {
+      id: "category-dia",
+      code: "PLATILLOS-DIA",
+      name: "Platillos del día",
+      color: "clay",
+      seasonal: true,
+      products: [
+        { ...catalog[0]!.products[0]!, id: "dish-1", code: "MOLE", name: "Mole", shortName: "Mole", priceInCents: 10_000 },
+        { ...catalog[0]!.products[0]!, id: "dish-3", code: "PIPIAN", name: "Pipián", shortName: "Pipián", available: false },
+      ],
+    };
+    const api = createApi({ catalog: vi.fn().mockResolvedValue([platillos]) });
+    await loginAndSelectTable(api);
+
+    expect(screen.queryByRole("button", { name: /agregar pipián/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Editar platillos" }));
+    fireEvent.change(await screen.findByLabelText("Precio de Mole"), { target: { value: "115" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Guardar" })[0]!);
+
+    await waitFor(() => expect(api.updateSeasonalProduct).toHaveBeenCalledWith("dish-1", {
+      expectedVersion: 1,
+      priceInCents: 11_500,
+    }));
+    expect(await screen.findByText("Mole: $115.00 · disponible hoy")).toBeInTheDocument();
+    expect(api.catalog).toHaveBeenCalledTimes(2);
   });
 
   it("genera una precuenta táctil sin cerrar la cuenta", async () => {
