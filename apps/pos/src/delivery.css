@@ -1,0 +1,34 @@
+.touch-modal.delivery-panel { width: min(100%, 900px); }
+.delivery-panel form, .delivery-sharing { display: grid; gap: 14px; }
+.delivery-panel label { display: grid; gap: 6px; font-weight: 650; }
+.delivery-panel input, .delivery-panel textarea, .delivery-panel select { width: 100%; min-height: 46px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: white; font: inherit; }
+.delivery-panel button, .delivery-actions a { min-height: 44px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 10px; font: inherit; font-weight: 650; }
+.delivery-driver-form { padding: 14px; border: 1px solid var(--line); border-radius: 12px; }
+.delivery-driver-form summary { cursor: pointer; font-weight: 750; padding: 8px 0; }
+.delivery-section { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }
+.delivery-section h3 { margin: 0 0 12px; }
+.delivery-notice { padding: 12px; border-radius: 10px; background: #e9f3ec; color: #285145; }
+.delivery-list-heading, .delivery-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.delivery-list-heading { justify-content: space-between; margin-bottom: 14px; }
+.delivery-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(220px,1fr)); gap: 10px; }
+.delivery-list button { display: grid; gap: 6px; text-align: left; background: white; overflow-wrap: anywhere; }
+.delivery-list button.selected { border: 2px solid #285145; background: #e9f3ec; }
+.delivery-item { display: grid; gap: 5px; padding: 12px 0; border-bottom: 1px solid var(--line); }
+.delivery-item span { font-size: 14px; color: #485a51; white-space: pre-wrap; }
+.delivery-warning { color: #934822; }
+.delivery-sharing { margin-top: 20px; }
+.delivery-sharing > div { display: grid; gap: 12px; }
+.delivery-selected > p { white-space: pre-wrap; overflow-wrap: anywhere; }
+.delivery-phone { min-height: 100dvh; background: #f6f5ef; color: #243c34; padding: 20px; }
+.delivery-phone > section { max-width: 620px; margin: 0 auto; }
+.delivery-phone header { padding-bottom: 18px; border-bottom: 1px solid #d5dcd6; }
+.delivery-phone header span { font-size: 14px; font-weight: 700; }
+.delivery-phone h1 { margin: 8px 0; font-size: 28px; }
+.delivery-phone h2 { font-size: 20px; }
+.delivery-phone button { min-height: 48px; padding: 12px 16px; border: 1px solid #b4c5b8; border-radius: 12px; font: inherit; font-weight: 700; background: white; color: #243c34; }
+.delivery-phone .save-delivery { background: #285145; color: white; }
+.delivery-phone address { font-style: normal; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 19px; line-height: 1.5; }
+.delivery-phone .delivery-note { padding: 14px; border-radius: 12px; background: #fff0cf; white-space: pre-wrap; }
+.delivery-phone footer { margin-top: 24px; color: #54645d; font-size: 14px; }
+@media (max-width: 520px) { .delivery-panel { padding: 16px; } .delivery-phone { padding: 16px; } .delivery-list { grid-template-columns: 1fr; } }
+@media print { .delivery-phone button, .delivery-phone .delivery-actions { display: none; } .delivery-phone { padding: 0; } }

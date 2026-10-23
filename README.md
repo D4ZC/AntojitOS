@@ -39,6 +39,8 @@ pnpm pilot:seed
 
 El uso de cliente opcional y envío automático a cocina se describe en [`docs/phase-5a/PEDIDOS_PROGRAMADOS.md`](docs/phase-5a/PEDIDOS_PROGRAMADOS.md).
 
+La administración de proveedores, cargos y pagos, y las comandas de reparto en el teléfono se describen en [`docs/phase-5a/ADMINISTRACION_Y_REPARTOS.md`](docs/phase-5a/ADMINISTRACION_Y_REPARTOS.md).
+
 La PWA queda en `http://localhost:8080`; la guía de operación y recuperación está en [`docs/phase-5a/EJECUCION_PILOTO.md`](docs/phase-5a/EJECUCION_PILOTO.md).
 
 En una PC nueva con Windows 11 x64, conservar la carpeta completa del proyecto y abrir

@@ -1,0 +1,43 @@
+.touch-modal.accounting-panel { width: min(100%, 1100px); }
+.accounting-panel button { min-height: 46px; padding: 10px 14px; border: 1px solid var(--line); border-radius: 12px; background: white; font-weight: 700; }
+.accounting-panel .modal-heading > button { padding: 0; flex-shrink: 0; }
+.accounting-tabs { display: flex; flex-wrap: wrap; gap: 8px; margin: 18px 0; }
+.accounting-panel .accounting-tabs button[aria-pressed="true"], .accounting-panel .accounting-primary { color: white; border-color: var(--forest); background: var(--forest); }
+.accounting-section { min-width: 0; padding: 18px; border: 1px solid var(--line); border-radius: 16px; background: #f8f5ee; }
+.accounting-section h3, .accounting-card h4 { margin: 0 0 12px; }
+.accounting-columns { display: grid; grid-template-columns: minmax(250px, .8fr) minmax(0, 1.2fr); gap: 16px; align-items: start; }
+.accounting-form fieldset { display: grid; gap: 14px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.accounting-form label, .accounting-period label { display: grid; gap: 7px; min-width: 0; font-size: 14px; font-weight: 700; }
+.accounting-form input, .accounting-form textarea, .accounting-form select, .accounting-period input { width: 100%; min-width: 0; min-height: 46px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 10px; background: white; font: inherit; color: var(--ink); }
+.accounting-form textarea { resize: vertical; }
+.accounting-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.accounting-list { display: grid; gap: 12px; }
+.accounting-card { min-width: 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: white; overflow-wrap: anywhere; }
+.accounting-card.inactive { background: #f0eeea; }
+.accounting-card-heading { display: flex; gap: 10px; align-items: start; justify-content: space-between; }
+.accounting-card-heading h4 { margin: 0; }
+.accounting-card p { margin: 10px 0; color: #53635d; font-size: 13px; }
+.accounting-badge { flex-shrink: 0; padding: 4px 8px; border-radius: 9px; background: #eee9df; color: #53635d; font-size: 11px; font-weight: 800; }
+.accounting-bill-totals { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 14px 0; }
+.accounting-bill-totals dt { color: var(--muted); font-size: 11px; }
+.accounting-bill-totals dd { margin: 5px 0 0; font-size: 14px; font-weight: 800; }
+.accounting-period { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+.accounting-period label { flex: 1 1 180px; }
+.accounting-period-label { color: var(--muted); font-size: 13px; }
+.accounting-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+.accounting-summary-grid > div { padding: 16px; border: 1px solid var(--line); border-radius: 12px; background: white; }
+.accounting-summary-grid dt { color: #53635d; font-size: 13px; font-weight: 700; }
+.accounting-summary-grid dd { margin: 8px 0; white-space: nowrap; font-size: 25px; font-weight: 800; }
+.accounting-summary-grid small { color: var(--muted); font-size: 11px; }
+.accounting-summary-grid .accounting-balance { background: #e5f0e8; border-color: #a1b9a7; }
+.accounting-notice { padding: 12px; border-radius: 12px; color: #295f4d; background: #e5f0e8; }
+.accounting-error { margin-bottom: 18px; }
+.touch-modal.accounting-payment-modal { width: min(100%, 680px); }
+.accounting-payment-history { display: grid; gap: 12px; margin-top: 24px; }
+.accounting-payment-history h3 { margin: 0; }
+.accounting-void-form { display: grid; gap: 14px; margin-top: 20px; padding: 16px; border: 1px solid #c88d80; border-radius: 12px; background: #fff4ef; }
+.accounting-void-form h3, .accounting-void-form p { margin: 0; }
+.accounting-panel .accounting-danger { color: #8c3023; border-color: #ce8172; background: #fff3ef; }
+.accounting-bill-void-section { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line); }
+@media (max-width: 800px) { .accounting-columns { grid-template-columns: 1fr; } .accounting-summary-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .accounting-backdrop { padding: 10px; } .accounting-panel, .accounting-payment-modal { max-height: calc(100dvh - 20px); padding: 16px; } .accounting-summary-grid { grid-template-columns: 1fr; } .accounting-section { padding: 12px; } .accounting-bill-totals dd { font-size: 12px; } }

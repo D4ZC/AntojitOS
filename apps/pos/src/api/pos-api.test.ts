@@ -143,6 +143,37 @@ describe("PosApi", () => {
     });
   });
 
+  it("consulta una comanda móvil con token aislado y sin enviar la sesión POS", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ assignment: { id: "delivery-1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new PosApi("/api", "admin-session").sharedDelivery("delivery-secret");
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/delivery/shared", {
+      method: "GET", headers: { "x-delivery-token": "delivery-secret" }, body: undefined,
+    });
+  });
+
+  it("registra pagos administrativos con versión, origen y clave de idempotencia", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ bill: { id: "bill-1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    const input = { expectedVersion: 2, amountInCents: 3500, methodCode: "CASH" as const, paidOn: "2026-10-23", source: "business_cash" as const };
+    await new PosApi("/api", "admin-session", () => "payment-key").payAccountingBill("bill-1", input);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/accounting/bills/bill-1/payments", {
+      method: "POST",
+      headers: { authorization: "Bearer admin-session", "content-type": "application/json", "idempotency-key": "payment-key" },
+      body: JSON.stringify(input),
+    });
+  });
+
+  it("renueva un enlace de reparto sin guardar el token en una clave de reintento", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ token: "delivery-secret", expiresAt: "2099-01-01", version: 2 }));
+    vi.stubGlobal("fetch", fetchMock);
+    await new PosApi("/api", "admin-session").shareDelivery("delivery-1", 1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/delivery/assignments/delivery-1/share", {
+      method: "POST", headers: { authorization: "Bearer admin-session", "content-type": "application/json" },
+      body: JSON.stringify({ expectedVersion: 1 }),
+    });
+  });
+
   it("envía el cobro completo con una sola clave idempotente", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
       id: "receipt-1",

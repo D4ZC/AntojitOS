@@ -1,3 +1,5 @@
+import type { AccountingApi } from "../accounting";
+import type { DeliveryApi, DeliveryAssignment, DeliveryDriver, SharedDelivery } from "../delivery";
 import { createUuid } from "@antojit-os/domain";
 import type {
   AccountManagementOptions,
@@ -42,7 +44,7 @@ const errorMessage = (body: unknown): string => {
   return "No fue posible completar la operación";
 };
 
-export class PosApi {
+export class PosApi implements AccountingApi, DeliveryApi {
   constructor(
     private readonly baseUrl: string,
     private accessToken?: string,
@@ -470,6 +472,76 @@ export class PosApi {
       idempotencyKey: this.createIdempotencyKey(),
       body: { reason },
     });
+  }
+
+  accountingSuppliers(): ReturnType<AccountingApi["accountingSuppliers"]> {
+    return this.request(`/v1/accounting/suppliers`);
+  }
+
+  createAccountingSupplier(input: Parameters<AccountingApi["createAccountingSupplier"]>[0]): ReturnType<AccountingApi["createAccountingSupplier"]> {
+    return this.request(`/v1/accounting/suppliers`, { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  updateAccountingSupplier(supplierId: Parameters<AccountingApi["updateAccountingSupplier"]>[0], input: Parameters<AccountingApi["updateAccountingSupplier"]>[1]): ReturnType<AccountingApi["updateAccountingSupplier"]> {
+    return this.request(`/v1/accounting/suppliers/${supplierId}`, { method: "PATCH", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  accountingBills(): ReturnType<AccountingApi["accountingBills"]> {
+    return this.request(`/v1/accounting/bills`);
+  }
+
+  createAccountingBill(input: Parameters<AccountingApi["createAccountingBill"]>[0]): ReturnType<AccountingApi["createAccountingBill"]> {
+    return this.request(`/v1/accounting/bills`, { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  voidAccountingBill(billId: string, input: { expectedVersion: number; reason: string }): ReturnType<AccountingApi["createAccountingBill"]> {
+    return this.request(`/v1/accounting/bills/${billId}/voids`, { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  payAccountingBill(billId: Parameters<AccountingApi["payAccountingBill"]>[0], input: Parameters<AccountingApi["payAccountingBill"]>[1]): ReturnType<AccountingApi["payAccountingBill"]> {
+    return this.request(`/v1/accounting/bills/${billId}/payments`, { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  voidAccountingPayment(billId: Parameters<AccountingApi["voidAccountingPayment"]>[0], paymentId: Parameters<AccountingApi["voidAccountingPayment"]>[1], input: Parameters<AccountingApi["voidAccountingPayment"]>[2]): ReturnType<AccountingApi["voidAccountingPayment"]> {
+    return this.request(`/v1/accounting/bills/${billId}/payments/${paymentId}/voids`, { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  accountingSummary(period: Parameters<AccountingApi["accountingSummary"]>[0]): ReturnType<AccountingApi["accountingSummary"]> {
+    return this.request(`/v1/accounting/summary?${new URLSearchParams({ from: period.from, to: period.to })}`);
+  }
+
+  async deliveryDrivers(): Promise<DeliveryDriver[]> {
+    const result = await this.request<{ drivers: DeliveryDriver[] }>("/v1/delivery/drivers");
+    return result.drivers;
+  }
+
+  createDeliveryDriver(input: Parameters<DeliveryApi["createDeliveryDriver"]>[0]): ReturnType<DeliveryApi["createDeliveryDriver"]> {
+    return this.request("/v1/delivery/drivers", { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  async deliveryAssignments(): Promise<DeliveryAssignment[]> {
+    const result = await this.request<{ assignments: DeliveryAssignment[] }>("/v1/delivery/assignments");
+    return result.assignments;
+  }
+
+  assignDelivery(input: Parameters<DeliveryApi["assignDelivery"]>[0]): ReturnType<DeliveryApi["assignDelivery"]> {
+    return this.request("/v1/delivery/assignments", { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  updateDeliveryStatus(id: string, input: Parameters<DeliveryApi["updateDeliveryStatus"]>[1]): ReturnType<DeliveryApi["updateDeliveryStatus"]> {
+    return this.request(`/v1/delivery/assignments/${id}/status`, { method: "PATCH", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  refreshDelivery(id: string, input: Parameters<DeliveryApi["refreshDelivery"]>[1]): ReturnType<DeliveryApi["refreshDelivery"]> {
+    return this.request(`/v1/delivery/assignments/${id}/refresh`, { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  shareDelivery(id: string, expectedVersion: number): ReturnType<DeliveryApi["shareDelivery"]> {
+    return this.request(`/v1/delivery/assignments/${id}/share`, { method: "POST", body: { expectedVersion } });
+  }
+
+  sharedDelivery(token: string): Promise<{ assignment: SharedDelivery }> {
+    return this.request("/v1/delivery/shared", { authenticated: false, headers: { "x-delivery-token": token } });
   }
 
   private async request<Response>(

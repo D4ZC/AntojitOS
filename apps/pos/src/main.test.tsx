@@ -22,6 +22,16 @@ afterEach(async () => {
 });
 
 describe("entrada de la aplicación instalada", () => {
+  it("abre la comanda móvil sin pedir PIN ni registrar terminal", async () => {
+    vi.stubEnv("VITE_REMOTE_MODE", "true");
+    vi.stubEnv("VITE_APP_MODE", "kds");
+    window.history.replaceState({}, "", "/reparto");
+    document.body.innerHTML = '<div id="root"></div>';
+    await act(async () => { await import("./main"); });
+    expect(screen.getByRole("heading", { name: "Comanda de entrega" })).toBeInTheDocument();
+    expect(screen.queryByLabelText("PIN")).not.toBeInTheDocument();
+  });
+
   for (const path of ["/?mode=kds", "/kds/", "/kds"]) {
     it(`abre cocina desde ${path} aunque la instalación sea POS`, async () => {
       vi.stubEnv("VITE_REMOTE_MODE", "true");

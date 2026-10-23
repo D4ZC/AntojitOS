@@ -1,6 +1,7 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App";
+import { DeliveryApp } from "./DeliveryApp";
 import { KdsApp } from "./KdsApp";
 import { RemotePosApp } from "./RemotePosApp";
 import "./styles.css";
@@ -8,7 +9,10 @@ import "./styles.css";
 const queryMode = new URLSearchParams(window.location.search).get("mode");
 const isKds = import.meta.env.VITE_APP_MODE === "kds" || queryMode === "kds" ||
   /^\/kds\/?$/.test(window.location.pathname);
-const RootApp = isKds
+const isDelivery = /^\/reparto\/?$/.test(window.location.pathname);
+const RootApp = isDelivery
+  ? DeliveryApp
+  : isKds
   ? KdsApp
   : import.meta.env.VITE_REMOTE_MODE === "true"
     ? RemotePosApp

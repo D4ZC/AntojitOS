@@ -40,6 +40,8 @@ const session: Session = {
       "sales.receipt.reprint",
       "sales.refund.create",
       "catalog.product.manage",
+      "accounting.manage",
+      "delivery.manage",
     ],
   },
 };
@@ -233,6 +235,22 @@ const cashReport: CashShiftReport = {
 };
 
 const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
+  accountingSuppliers: vi.fn().mockResolvedValue({ suppliers: [] }),
+  createAccountingSupplier: vi.fn(),
+  updateAccountingSupplier: vi.fn(),
+  accountingBills: vi.fn().mockResolvedValue({ bills: [] }),
+  createAccountingBill: vi.fn(),
+  payAccountingBill: vi.fn(),
+  voidAccountingBill: vi.fn(),
+  voidAccountingPayment: vi.fn(),
+  accountingSummary: vi.fn().mockResolvedValue({ from: "2026-10-01", to: "2026-10-23", sales: { grossInCents: 0, refundedInCents: 0, netInCents: 0, receiptCount: 0 }, expenses: { supplierPaymentsInCents: 0, manualCashOutInCents: 0, totalInCents: 0 }, balanceInCents: 0, outstandingInCents: 0 }),
+  deliveryDrivers: vi.fn().mockResolvedValue([]),
+  createDeliveryDriver: vi.fn(),
+  deliveryAssignments: vi.fn().mockResolvedValue([]),
+  assignDelivery: vi.fn(),
+  updateDeliveryStatus: vi.fn(),
+  refreshDelivery: vi.fn(),
+  shareDelivery: vi.fn(),
   setAccessToken: vi.fn(),
   registerTerminal: vi.fn().mockResolvedValue(terminal),
   login: vi.fn().mockResolvedValue(session),
@@ -594,6 +612,35 @@ describe("POS conectado", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
     expect(screen.getAllByText("Elige una fecha y hora futuras para enviar a cocina").length).toBeGreaterThan(0);
     expect(api.updateAccountDetails).not.toHaveBeenCalled();
+  });
+
+  it("permite al administrador abrir contabilidad desde la cuenta", async () => {
+    storeTerminal();
+    const api = createApi();
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Contabilidad y proveedores" }));
+    expect(await screen.findByRole("heading", { name: /Contabilidad/ })).toBeInTheDocument();
+    await waitFor(() => expect(api.accountingSuppliers).toHaveBeenCalled());
+  });
+
+  it("oculta contabilidad a un operador sin el permiso administrativo", async () => {
+    storeTerminal();
+    const api = createApi({ login: vi.fn().mockResolvedValue({ ...session, user: { ...session.user, permissions: ["delivery.manage"] } }) });
+    await loginAndSelectTable(api);
+    expect(screen.queryByRole("button", { name: "Contabilidad y proveedores" })).not.toBeInTheDocument();
+    expect(api.accountingSuppliers).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Asignar repartidor" })).toBeDisabled();
+  });
+
+  it("abre repartos con la comanda actual lista para asignar", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(sentAccount) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Asignar repartidor" }));
+    expect(await screen.findByRole("heading", { name: "Repartos" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Dirección de entrega")).toBeInTheDocument();
+    await waitFor(() => expect(api.deliveryDrivers).toHaveBeenCalled());
+    expect(api.checkoutAccount).not.toHaveBeenCalled();
   });
 
   it("agrega un producto y envía la ronda al servidor", async () => {

@@ -103,7 +103,7 @@ try {
           'catalog.read', 'service.account.open', 'service.account.read',
           'service.item.add', 'service.item.edit', 'service.item.cancel',
           'service.round.send', 'service.account.manage',
-          'service.precheck.create'
+          'service.precheck.create', 'delivery.manage'
         )
        ON CONFLICT DO NOTHING`,
       [ids.waiterRole],

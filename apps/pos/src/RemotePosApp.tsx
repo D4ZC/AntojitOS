@@ -1,4 +1,8 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { AccountingPanel } from "./AccountingPanel";
+import type { AccountingApi } from "./accounting";
+import { DeliveryPanel } from "./DeliveryPanel";
+import type { DeliveryApi } from "./delivery";
 import { ApiError, PosApi } from "./api/pos-api";
 import type {
   AccountManagementOptions,
@@ -28,7 +32,7 @@ import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
 
 const TERMINAL_STORAGE_KEY = "antojit-os.terminal.v1";
 
-export interface RemoteApi extends SeasonalMenuApi {
+export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi {
   setAccessToken(accessToken?: string): void;
   registerTerminal(input: {
     bootstrapToken: string;
@@ -259,6 +263,9 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [checkoutError, setCheckoutError] = useState<string | null>(null);
   const [receipt, setReceipt] = useState<SalesReceipt | null>(null);
   const [cashPanelOpen, setCashPanelOpen] = useState(false);
+  const [accountingOpen, setAccountingOpen] = useState(false);
+  const [deliveryOpen, setDeliveryOpen] = useState(false);
+  const [deliveryAccount, setDeliveryAccount] = useState<ServiceAccount | null>(null);
   const [cashReport, setCashReport] = useState<CashShiftReport | null>(null);
   const [cashClose, setCashClose] = useState<CashShiftClose | null>(null);
   const [recentReceipts, setRecentReceipts] = useState<SalesReceiptSummary[]>([]);
@@ -430,6 +437,9 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setDetailsOpen(false);
     setLeavingAccount(false);
     setQuickCancellationOpen(false);
+    setAccountingOpen(false);
+    setDeliveryOpen(false);
+    setDeliveryAccount(null);
     setPrecheck(null);
   };
 
@@ -1054,6 +1064,18 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const assignPaidReceipt = async () => {
+    if (!receipt || busy) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const current = await api.account(receipt.account.id);
+      setDeliveryAccount(current);
+      setDeliveryOpen(true);
+    } catch (cause) { setError(messageFor(cause)); }
+    finally { setBusy(false); }
+  };
+
   const closeReceipt = async () => {
     setReceipt(null);
     setAccount(null);
@@ -1238,6 +1260,15 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     );
   }
 
+  const canManageAccounting = session.user.permissions.includes("accounting.manage");
+  const canManageDelivery = session.user.permissions.includes("delivery.manage");
+  if (accountingOpen && canManageAccounting) {
+    return <main className="service-shell"><AccountingPanel api={api} onClose={() => setAccountingOpen(false)} /></main>;
+  }
+  if (deliveryOpen && canManageDelivery) {
+    return <main className="service-shell"><DeliveryPanel api={api} account={deliveryAccount} onClose={() => { setDeliveryOpen(false); setDeliveryAccount(null); }} /></main>;
+  }
+
   if (!account) {
     const canManageCash = session.user.permissions.includes("cash.shift.preview");
     return (
@@ -1247,6 +1278,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <div className="service-selector-heading">
             <div><span className="eyebrow">Nuevo servicio</span><h1 id="service-title">Selecciona una mesa</h1></div>
             <div className="service-heading-actions">
+              {canManageAccounting && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => setAccountingOpen(true)}>Contabilidad y proveedores</button>}
+              {canManageDelivery && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => { setDeliveryAccount(null); setDeliveryOpen(true); }}>Repartos</button>}
               {canManageCash && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => void openCashPanel()}>Caja y corte</button>}
               <div className="guest-counter" aria-label="Número de comensales">
                 <span>Comensales</span>
@@ -1549,6 +1582,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
               {account.scheduledFor && <p className="order-details-summary">{account.scheduleDispatchedAt ? "Enviado a cocina" : "Envío programado"}: <strong>{scheduledLabel(account.scheduleDispatchedAt || account.scheduledFor)}</strong></p>}
               {account.scheduleError && <p className="form-error" role="alert">El envío a cocina está pendiente. El servidor volverá a intentarlo; también puedes revisar la programación.</p>}
               {canEditDetails && <button className="order-details-button" type="button" disabled={busy} onClick={() => editDetails(account)}>Cliente y programación</button>}
+              {canManageDelivery && <button className="order-details-button" type="button" disabled={busy || activeAccountItemCount === 0} onClick={() => { setDeliveryAccount(account); setDeliveryOpen(true); }}>Asignar repartidor</button>}
+              {canManageAccounting && <button className="order-details-button" type="button" disabled={busy} onClick={() => setAccountingOpen(true)}>Contabilidad y proveedores</button>}
             </div>
           </div>
           <div className="order-items" aria-live="polite">
@@ -1692,7 +1727,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
               {receipt.payments.map((payment) => <div key={payment.id}><span>{payment.method.name}{payment.reference ? ` · ${payment.reference}` : ""}</span><strong>{formatMoney(payment.totalInCents)}</strong></div>)}
               {receipt.totals.changeInCents > 0 && <div className="change-row"><span>Cambio</span><strong>{formatMoney(receipt.totals.changeInCents)}</strong></div>}
             </div>
-            <div className="modal-actions single-action"><button className="access-primary" type="button" onClick={() => void closeReceipt()}>Cerrar ticket</button></div>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <div className="modal-actions">{canManageDelivery && <button type="button" disabled={busy} onClick={() => void assignPaidReceipt()}>Asignar repartidor al pedido pagado</button>}<button className="access-primary" type="button" disabled={busy} onClick={() => void closeReceipt()}>Cerrar ticket</button></div>
           </section>
         </div>
       )}
