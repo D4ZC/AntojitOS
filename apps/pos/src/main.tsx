@@ -6,7 +6,8 @@ import { RemotePosApp } from "./RemotePosApp";
 import "./styles.css";
 
 const queryMode = new URLSearchParams(window.location.search).get("mode");
-const isKds = import.meta.env.VITE_APP_MODE === "kds" || queryMode === "kds";
+const isKds = import.meta.env.VITE_APP_MODE === "kds" || queryMode === "kds" ||
+  /^\/kds\/?$/.test(window.location.pathname);
 const RootApp = isKds
   ? KdsApp
   : import.meta.env.VITE_REMOTE_MODE === "true"
@@ -21,6 +22,6 @@ createRoot(document.getElementById("root")!).render(
 
 if ("serviceWorker" in navigator && import.meta.env.PROD) {
   window.addEventListener("load", () => {
-    void navigator.serviceWorker.register("/sw.js");
+    void navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" });
   });
 }

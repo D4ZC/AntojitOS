@@ -5,11 +5,12 @@ import { OutboxModule } from "../outbox/outbox.module.js";
 import { ProductionModule } from "../production/production.module.js";
 import { AccountsController } from "./accounts.controller.js";
 import { AccountsService } from "./accounts.service.js";
+import { ScheduledOrdersWorker } from "./scheduled-orders.worker.js";
 
 @Module({
   imports: [AuditModule, IdempotencyModule, OutboxModule, ProductionModule],
   controllers: [AccountsController],
-  providers: [AccountsService],
+  providers: [AccountsService, ScheduledOrdersWorker],
   exports: [AccountsService],
 })
 export class AccountsModule {}

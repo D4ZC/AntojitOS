@@ -1,4 +1,4 @@
-import { type FormEvent, useMemo, useState } from "react";
+import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { ApiError, PosApi } from "./api/pos-api";
 import type {
   AccountManagementOptions,
@@ -47,6 +47,8 @@ export interface RemoteApi extends SeasonalMenuApi {
     tableId?: string;
     guestCount: number;
     reference?: string;
+    customerName?: string | null;
+    scheduledFor?: string | null;
   }): Promise<{ id: string }>;
   account(accountId: string): Promise<ServiceAccount>;
   tableAccounts(tableId: string): Promise<AccountSummary[]>;
@@ -93,6 +95,10 @@ export interface RemoteApi extends SeasonalMenuApi {
     accountId: string,
     adjustmentId: string,
     input: { expectedVersion: number; reason: string },
+  ): Promise<{ accountVersion: number }>;
+  updateAccountDetails(
+    accountId: string,
+    input: { expectedVersion: number; customerName?: string | null; scheduledFor?: string | null },
   ): Promise<{ accountVersion: number }>;
   updateAccountContext(
     accountId: string,
@@ -181,6 +187,18 @@ const serviceLabel = (account: ServiceAccount): string => {
   return account.reference || "Venta rápida";
 };
 
+const localDateTime = (value: string | null | undefined): string => {
+  if (!value) return "";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return "";
+  const local = new Date(date.getTime() - date.getTimezoneOffset() * 60_000);
+  return local.toISOString().slice(0, 16);
+};
+
+const scheduledLabel = (value: string): string => new Date(value).toLocaleString("es-MX", {
+  day: "numeric", month: "short", hour: "2-digit", minute: "2-digit",
+});
+
 const moneyInput = (cents: number): string => (cents / 100).toFixed(2);
 
 const moneyInputToCents = (value: string): number | null => {
@@ -210,6 +228,11 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [seasonalEditorOpen, setSeasonalEditorOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<RemoteOrderItem | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
+  const [customerNameDraft, setCustomerNameDraft] = useState("");
+  const [scheduledDraft, setScheduledDraft] = useState("");
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [leavingAccount, setLeavingAccount] = useState(false);
   const [cancellingItem, setCancellingItem] = useState<RemoteOrderItem | null>(null);
   const [cancellationReason, setCancellationReason] = useState("");
   const [precheck, setPrecheck] = useState<Precheck | null>(null);
@@ -277,6 +300,57 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     return nextAccount;
   };
 
+  // El servidor despacha la programación; esta consulta sólo actualiza la tablet.
+  useEffect(() => {
+    if (!session || busy) return;
+    let active = true;
+    const poll = window.setInterval(() => {
+      if (account?.scheduledFor && !account.scheduleDispatchedAt) {
+        void api.account(account.id).then((next) => { if (active) setAccount(next); }).catch(() => undefined);
+      } else if (!account) {
+        void api.openCounterAccounts().then((next) => { if (active) setOpenCounterAccounts(next); }).catch(() => undefined);
+      }
+    }, 5_000);
+    return () => { active = false; window.clearInterval(poll); };
+  }, [api, session, account?.id, account?.scheduledFor, account?.scheduleDispatchedAt, busy]);
+
+  const editDetails = (current: ServiceAccount, enableSchedule = false) => {
+    setCustomerNameDraft(current.customerName ?? "");
+    setScheduledDraft(localDateTime(current.scheduledFor));
+    setScheduleEnabled(enableSchedule || Boolean(current.scheduledFor && !current.scheduleDispatchedAt));
+    setError(null);
+    setDetailsOpen(true);
+  };
+
+  const saveDetails = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!account || busy) return;
+    const nextSchedule = scheduleEnabled && scheduledDraft ? new Date(scheduledDraft) : null;
+    const scheduleChanged = scheduleEnabled
+      ? scheduledDraft !== localDateTime(account.scheduledFor) || Boolean(account.scheduleDispatchedAt)
+      : Boolean(account.scheduledFor && !account.scheduleDispatchedAt);
+    if (scheduleEnabled && (!nextSchedule || !Number.isFinite(nextSchedule.getTime()) || (scheduleChanged && nextSchedule.getTime() <= Date.now()))) {
+      setError("Elige una fecha y hora futuras para enviar a cocina");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api.updateAccountDetails(account.id, {
+        expectedVersion: account.version,
+        customerName: customerNameDraft.trim() || null,
+        ...(scheduleChanged ? { scheduledFor: nextSchedule?.toISOString() ?? null } : {}),
+      });
+      await refreshAccount(account.id);
+      setDetailsOpen(false);
+      setNotice(scheduleEnabled ? "Pedido programado. Se enviará automáticamente a cocina a la hora indicada." : "Datos del pedido guardados");
+    } catch (detailsError) {
+      await handleMutationError(detailsError);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const handleRegister = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
@@ -330,7 +404,21 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setError(null);
   };
 
-  const logout = () => {
+  const logout = async () => {
+    if (busy) return;
+    if (account && account.serviceType !== "table" && !account.scheduledFor && !account.adjustments.length &&
+        account.items.every((item) => item.preparationState === "cancelled") &&
+        (account.responsible.id === session?.user.id || session?.user.permissions.includes("service.account.manage"))) {
+      setBusy(true);
+      try {
+        await api.cancelAccount(account.id, { expectedVersion: account.version, reason: "Servicio sin productos descartado al cerrar sesión" });
+      } catch (logoutError) {
+        await handleMutationError(logoutError);
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
+    }
     api.setAccessToken(undefined);
     setSession(null);
     setAccount(null);
@@ -339,6 +427,9 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setLayout(null);
     setError(null);
     setManagementOpen(false);
+    setDetailsOpen(false);
+    setLeavingAccount(false);
+    setQuickCancellationOpen(false);
     setPrecheck(null);
   };
 
@@ -381,12 +472,13 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
-  const openCounterService = async (serviceType: "quick" | "takeaway") => {
+  const openCounterService = async (serviceType: "quick" | "takeaway", schedule = false) => {
     setBusy(true);
     setError(null);
     try {
       const opened = await api.openAccount({ serviceType, guestCount });
-      await refreshAccount(opened.id);
+      const openedAccount = await refreshAccount(opened.id);
+      if (schedule) editDetails(openedAccount, true);
       setNotice(serviceType === "takeaway" ? "Orden para llevar abierta" : "Venta rápida abierta");
     } catch (openingError) {
       setError(messageFor(openingError));
@@ -398,10 +490,12 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const handleMutationError = async (mutationError: unknown) => {
     if (mutationError instanceof ApiError && mutationError.status === 409 && account) {
       try {
-        await refreshAccount(account.id);
-        setNotice("La cuenta cambió en otra terminal; ya mostramos la versión más reciente");
-        setError(null);
-        return;
+        const latest = await refreshAccount(account.id);
+        if (latest.version !== account.version) {
+          setNotice("La cuenta cambió en otra terminal; ya mostramos la versión más reciente");
+          setError(null);
+          return;
+        }
       } catch {
         // El error original explica mejor qué operación falló.
       }
@@ -729,6 +823,35 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const showServices = async () => {
+    setAccount(null);
+    setDetailsOpen(false);
+    setLeavingAccount(false);
+    await loadServiceData();
+  };
+
+  const leaveCurrentAccount = async () => {
+    if (!account || busy) return;
+    const canDiscardOwnCounter = account.serviceType !== "table" && (
+      account.responsible.id === session?.user.id || session?.user.permissions.includes("service.account.manage")
+    );
+    const hasItems = account.items.some((item) => item.preparationState !== "cancelled");
+    if (canDiscardOwnCounter && !hasItems && !account.adjustments.length && !account.scheduledFor) {
+      await cancelCurrentAccount("Servicio sin productos descartado al salir");
+      return;
+    }
+    if (canDiscardOwnCounter && hasItems && !account.scheduledFor) {
+      setLeavingAccount(true);
+      setError(null);
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try { await showServices(); }
+    catch (navigationError) { setError(messageFor(navigationError)); }
+    finally { setBusy(false); }
+  };
+
   const cancelCurrentAccount = async (reason: string) => {
     if (!account || busy || !reason.trim()) return;
     const cancelledLabel = serviceLabel(account);
@@ -740,6 +863,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         reason: reason.trim(),
       });
       setAccount(null);
+      setLeavingAccount(false);
+      setDetailsOpen(false);
       setManagementOpen(false);
       setManagementOptions(null);
       setManagementReason("");
@@ -749,7 +874,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
       await loadServiceData();
       setNotice(account.tableId ? `${cancelledLabel} liberada` : `${cancelledLabel} cancelada`);
     } catch (cancellationError) {
-      setError(messageFor(cancellationError));
+      await handleMutationError(cancellationError);
     } finally {
       setBusy(false);
     }
@@ -1135,6 +1260,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <div className="counter-services">
             <button type="button" disabled={busy} onClick={() => void openCounterService("quick")}><span>⚡</span><strong>Venta rápida</strong><small>Sin mesa</small></button>
             <button type="button" disabled={busy} onClick={() => void openCounterService("takeaway")}><span>🛍️</span><strong>Para llevar</strong><small>Orden abierta</small></button>
+            <button type="button" disabled={busy} onClick={() => void openCounterService("takeaway", true)}><span>🕒</span><strong>Programar pedido</strong><small>Envío automático a cocina</small></button>
           </div>
           {openCounterAccounts.length > 0 && (
             <section className="open-counter-section" aria-labelledby="open-counter-title">
@@ -1144,8 +1270,10 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                   <button type="button" key={openAccount.id} disabled={busy} onClick={() => void selectExistingAccount(openAccount.id)} aria-label={`Abrir ${openAccount.label} ${openAccount.sequence}`}>
                     <span>{openAccount.serviceType === "takeaway" ? "🛍️" : "⚡"}</span>
                     <strong>{openAccount.label} {openAccount.sequence}</strong>
-                    <small>{openAccount.itemCount} productos · {openAccount.responsible.displayName}</small>
+                    <small>{openAccount.customerName ? `Cliente: ${openAccount.customerName}` : openAccount.responsible.displayName}</small>
+                    <small>{openAccount.itemCount} productos{openAccount.scheduledFor ? ` · ${openAccount.scheduleDispatchedAt ? "Enviado" : "Programado"}: ${scheduledLabel(openAccount.scheduledFor)}` : ""}</small>
                     <b>{formatMoney(openAccount.totalInCents)}</b>
+                    {openAccount.scheduleError && <small className="schedule-error">Envío pendiente; reintentando</small>}
                   </button>
                 ))}
               </div>
@@ -1337,7 +1465,12 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const activeAccountItemCount = account.items
     .filter((item) => item.preparationState !== "cancelled")
     .reduce((total, item) => total + item.quantity, 0);
-  const canCancelAccount = activeAccountItemCount === 0 && account.adjustments.length === 0;
+  const canDiscardCounter = account.serviceType !== "table" && (
+    account.responsible.id === session.user.id || canManageAccount
+  );
+  const canCancelAccount = (activeAccountItemCount === 0 || (canDiscardCounter && account.items.every((item) => ["pending", "cancelled"].includes(item.preparationState)))) && account.adjustments.length === 0;
+  const schedulePending = Boolean(account.scheduledFor && !account.scheduleDispatchedAt);
+  const canEditDetails = canManageAccount || account.responsible.id === session.user.id;
   const numericTipPercent = Number(tipPercent);
   const checkoutTipInCents = Number.isFinite(numericTipPercent) && numericTipPercent >= 0
     ? Math.round(account.totalInCents * numericTipPercent / 100)
@@ -1364,10 +1497,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         session={session}
         context={serviceLabel(account)}
         guestCount={account.guestCount}
-        onContextClick={() => {
-          setAccount(null);
-          void loadServiceData();
-        }}
+        onContextClick={() => void leaveCurrentAccount()}
         onLogout={logout}
       />
       <section className="workspace">
@@ -1409,9 +1539,17 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           </div>
         </section>
         <aside className="order-panel" aria-labelledby="order-title">
-          <div className="order-heading">
-            <div><span className="eyebrow">Cuenta actual</span><h2 id="order-title">{serviceLabel(account)}</h2></div>
-            <div className="account-heading-actions"><span className="version-pill" title="Versión de la cuenta">v{account.version}</span>{canManageAccount && <button className="icon-button" type="button" aria-label="Gestionar cuenta" disabled={busy} onClick={() => void openManagement()}>•••</button>}</div>
+          <div className="order-details-heading">
+            <div className="order-heading">
+              <div><span className="eyebrow">Cuenta actual</span><h2 id="order-title">{serviceLabel(account)}</h2></div>
+              <div className="account-heading-actions"><span className="version-pill" title="Versión de la cuenta">v{account.version}</span>{canManageAccount && <button className="icon-button" type="button" aria-label="Gestionar cuenta" disabled={busy} onClick={() => void openManagement()}>•••</button>}</div>
+            </div>
+            <div className="order-details">
+              {account.customerName && <p className="order-details-summary">Cliente: <strong>{account.customerName}</strong></p>}
+              {account.scheduledFor && <p className="order-details-summary">{account.scheduleDispatchedAt ? "Enviado a cocina" : "Envío programado"}: <strong>{scheduledLabel(account.scheduleDispatchedAt || account.scheduledFor)}</strong></p>}
+              {account.scheduleError && <p className="form-error" role="alert">El envío a cocina está pendiente. El servidor volverá a intentarlo; también puedes revisar la programación.</p>}
+              {canEditDetails && <button className="order-details-button" type="button" disabled={busy} onClick={() => editDetails(account)}>Cliente y programación</button>}
+            </div>
           </div>
           <div className="order-items" aria-live="polite">
             {account.items.length === 0 ? (
@@ -1431,7 +1569,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                   <button type="button" aria-label={`Quitar una unidad de ${item.productName}`} disabled={busy || item.preparationState !== "pending" || item.quantity <= 1} onClick={() => void changeQuantity(item, item.quantity - 1)}>−</button>
                   <output aria-label={`Cantidad: ${item.quantity}`}>{item.quantity}</output>
                   <button type="button" aria-label={`Agregar una unidad de ${item.productName}`} disabled={busy || item.preparationState !== "pending"} onClick={() => void changeQuantity(item, item.quantity + 1)}>+</button>
-                  <button className="note-button" type="button" disabled={busy || item.preparationState !== "pending"} onClick={() => { setEditingItem(item); setNoteDraft(item.note ?? ""); }}>+ Nota</button>
+                  <button className="note-button" type="button" disabled={busy || item.preparationState === "cancelled"} onClick={() => { setEditingItem(item); setNoteDraft(item.note ?? ""); }}>+ Nota</button>
                   <button className="cancel-button" type="button" disabled={busy || !["pending", "sent"].includes(item.preparationState)} onClick={() => { setCancellingItem(item); setCancellationReason(""); }}>Cancelar</button>
                 </div>
               </article>
@@ -1446,10 +1584,10 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             <div className="total-row"><span>Total</span><strong>{formatMoney(account.totalInCents)}</strong></div>
           </div>
           <div className="primary-actions">
-            <button className="send-button" type="button" disabled={pendingCount === 0 || busy} onClick={() => void sendRound()}><span>{busy ? "Procesando…" : "Enviar comanda"}</span>{pendingCount > 0 && <span className="count-badge">{pendingCount}</span>}</button>
+            <button className="send-button" type="button" disabled={pendingCount === 0 || busy || schedulePending} onClick={() => void sendRound()}><span>{busy ? "Procesando…" : schedulePending ? "Envío automático programado" : "Enviar comanda"}</span>{pendingCount > 0 && <span className="count-badge">{pendingCount}</span>}</button>
             {canCreatePrecheck && <button className="precheck-button" type="button" disabled={account.totalInCents <= 0 || busy} onClick={() => void generatePrecheck()}>Precuenta</button>}
             <button className="pay-button" type="button" disabled={!canCapturePayment || account.totalInCents <= 0 || pendingCount > 0 || busy} onClick={() => void openCheckout()}>{canCapturePayment ? "Pago" : "Pago restringido"}</button>
-            {canManageAccount && account.serviceType === "table" && <button className="release-table-button" type="button" disabled={busy} onClick={() => { setQuickCancellationReason(""); setQuickCancellationOpen(true); setError(null); }}>Liberar mesa</button>}
+            {(canManageAccount || canDiscardCounter) && <button className="release-table-button" type="button" disabled={busy} onClick={() => { setQuickCancellationReason(""); setQuickCancellationOpen(true); setError(null); }}>{account.serviceType === "table" ? "Liberar mesa" : "Cancelar pedido"}</button>}
           </div>
         </aside>
       </section>
@@ -1630,14 +1768,39 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         </div>
       )}
 
+      {detailsOpen && (
+        <div className="modal-backdrop" role="presentation">
+          <form className="touch-modal order-details-modal" role="dialog" aria-modal="true" aria-labelledby="order-details-title" onSubmit={(event) => void saveDetails(event)}>
+            <div className="modal-heading"><div><span className="eyebrow">Datos opcionales</span><h2 id="order-details-title">Cliente y programación</h2></div><button type="button" aria-label="Cerrar" disabled={busy} onClick={() => setDetailsOpen(false)}>×</button></div>
+            <label>Nombre del cliente (opcional)<input value={customerNameDraft} maxLength={80} placeholder="Escribe el nombre del cliente" onChange={(event) => setCustomerNameDraft(event.target.value)} /></label>
+            <label className="schedule-toggle"><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} />Programar envío a cocina</label>
+            {scheduleEnabled && <label>Fecha y hora de envío a cocina<input type="datetime-local" required value={scheduledDraft} onChange={(event) => setScheduledDraft(event.target.value)} /></label>}
+            <p className="modal-help">{scheduleEnabled ? "Agrega los productos y guarda el pedido. El servidor lo enviará automáticamente a cocina a esta hora, aunque cierres la tablet." : "Puedes agregar un cliente y programar este pedido más adelante."}</p>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setDetailsOpen(false)}>Volver al pedido</button><button className="access-primary" type="submit" disabled={busy}>Guardar datos</button></div>
+          </form>
+        </div>
+      )}
+
+      {leavingAccount && (
+        <div className="modal-backdrop" role="presentation">
+          <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="leave-order-title">
+            <div className="modal-heading"><h2 id="leave-order-title">Salir de {serviceLabel(account)}</h2><button type="button" aria-label="Cerrar" disabled={busy} onClick={() => setLeavingAccount(false)}>×</button></div>
+            <p className="modal-help">Puedes conservar el pedido para retomarlo desde Servicios abiertos.{canCancelAccount ? " También puedes cancelar este pedido sin enviar a cocina." : " Para cancelarlo, cancela primero los artículos enviados y anula los descuentos."}</p>
+            {error && <p className="form-error" role="alert">{error}</p>}
+            <div className="modal-actions"><button type="button" disabled={busy} onClick={() => { setBusy(true); void showServices().catch((cause) => setError(messageFor(cause))).finally(() => setBusy(false)); }}>Conservar y salir</button>{canCancelAccount && <button className="danger-action" type="button" disabled={busy} onClick={() => void cancelCurrentAccount("Pedido sin enviar descartado al salir")}>Cancelar pedido y salir</button>}</div>
+          </section>
+        </div>
+      )}
+
       {quickCancellationOpen && (
         <div className="modal-backdrop" role="presentation">
           <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="quick-cancel-title">
-            <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="quick-cancel-title">Liberar {serviceLabel(account)}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setQuickCancellationOpen(false)}>×</button></div>
-            <p className="modal-help">La cuenta se marcará como cancelada y la mesa volverá a estar disponible.</p>
+            <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="quick-cancel-title">{account.tableId ? "Liberar" : "Cancelar"} {serviceLabel(account)}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setQuickCancellationOpen(false)}>×</button></div>
+            <p className="modal-help">{account.tableId ? "La cuenta se marcará como cancelada y la mesa volverá a estar disponible." : "Se cancelará el pedido y se descartarán los productos que aún no se han enviado a cocina."}</p>
             {!canCancelAccount && <p className="form-error" role="alert">Primero cancela o transfiere todos los artículos y anula los descuentos vigentes.</p>}
-            <label>Motivo para liberar la mesa<textarea value={quickCancellationReason} maxLength={200} rows={3} autoFocus onChange={(event) => setQuickCancellationReason(event.target.value)} /></label>
-            <div className="modal-actions"><button type="button" onClick={() => setQuickCancellationOpen(false)}>Conservar cuenta</button><button className="danger-action" type="button" disabled={!canCancelAccount || !quickCancellationReason.trim() || busy} onClick={() => void cancelCurrentAccount(quickCancellationReason)}>Confirmar y liberar</button></div>
+            <label>{account.tableId ? "Motivo para liberar la mesa" : "Motivo de cancelación"}<textarea value={quickCancellationReason} maxLength={200} rows={3} autoFocus onChange={(event) => setQuickCancellationReason(event.target.value)} /></label>
+            <div className="modal-actions"><button type="button" onClick={() => setQuickCancellationOpen(false)}>Conservar cuenta</button><button className="danger-action" type="button" disabled={!canCancelAccount || !quickCancellationReason.trim() || busy} onClick={() => void cancelCurrentAccount(quickCancellationReason)}>{account.tableId ? "Confirmar y liberar" : "Confirmar cancelación"}</button></div>
           </section>
         </div>
       )}
@@ -1671,6 +1834,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                 <button className={hasQuickNote(noteDraft, quickNote) ? "selected" : ""} type="button" key={quickNote} aria-pressed={hasQuickNote(noteDraft, quickNote)} onClick={() => setNoteDraft((draft) => toggleQuickNote(draft, quickNote))}>{quickNote}</button>
               ))}
             </div>
+            {editingItem.preparationState !== "pending" && <p className="modal-help">Cocina recibirá la actualización de esta nota.</p>}
             <label>Nota para preparación<textarea value={noteDraft} maxLength={200} rows={4} autoFocus onChange={(event) => setNoteDraft(event.target.value)} /></label>
             <div className="modal-actions"><button type="button" onClick={() => setEditingItem(null)}>Cancelar</button><button className="access-primary" type="button" disabled={busy} onClick={() => void changeQuantity(editingItem, editingItem.quantity, noteDraft.trim())}>Guardar nota</button></div>
           </section>

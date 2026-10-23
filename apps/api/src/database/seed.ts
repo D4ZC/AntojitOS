@@ -145,7 +145,7 @@ try {
        ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
       [ids.mainArea, ids.site],
     );
-    for (let index = 1; index <= 8; index += 1) {
+    for (let index = 1; index <= 9; index += 1) {
       const suffix = (219 + index).toString().padStart(12, "0");
       await transaction.query(
         `INSERT INTO service_tables (

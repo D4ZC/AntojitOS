@@ -541,7 +541,16 @@ export class CashService {
         ),
         session.query<{ count: number | string }>(
           `SELECT count(*) AS count FROM service_accounts
-            WHERE site_id = $1 AND status IN ('open', 'awaiting_payment')`,
+            WHERE site_id = $1 AND status IN ('open', 'awaiting_payment')
+              AND NOT (
+                scheduled_for IS NOT NULL AND scheduled_for > now()
+                AND schedule_dispatched_at IS NULL
+                AND NOT EXISTS (
+                  SELECT 1 FROM order_items items
+                    WHERE items.account_id = service_accounts.id
+                      AND items.preparation_state IN ('sent', 'fulfilled')
+                )
+              )`,
           [siteId],
         ),
       ]);

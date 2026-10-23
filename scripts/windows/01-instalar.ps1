@@ -185,13 +185,7 @@ try {
         }
         if (-not $PSBoundParameters.ContainsKey('AutoStartMode')) { $AutoStartMode = $installation.AutoStartMode }
     } else {
-        # A pre-existing machine without this installation's configuration must
-        # never be adopted with a fresh database password.
-        $env:CONTAINERS_MACHINE_PROVIDER = 'wsl'
-        $machineList = @(Invoke-AntojitCommand -FilePath $tools.PodmanPath -Arguments @('machine', 'list', '--format', 'json') -Capture) -join "`n"
-        if (@($machineList | ConvertFrom-Json | Where-Object { $_.Name -eq 'antojitos-pilot' }).Count -gt 0) {
-            throw 'Ya existe una maquina antojitos-pilot sin su configuracion Windows. Recupera la instalacion y .env.pilot anteriores antes de continuar.'
-        }
+        $machineName = Resolve-AntojitMachineName -PodmanPath $tools.PodmanPath
         $sourceMode = 'git'
         if (-not (Test-Path -LiteralPath (Join-Path $root '.git'))) { $sourceMode = 'snapshot' }
         $installation = [pscustomobject]@{
@@ -199,7 +193,7 @@ try {
             Root = $root
             StateDirectory = $stateDirectory
             Engine = 'podman'
-            MachineName = 'antojitos-pilot'
+            MachineName = $machineName
             OwnerSid = $owner.User.Value
             OwnerName = $owner.Name
             ComposeProviderPath = $tools.ComposeProviderPath
@@ -227,10 +221,12 @@ try {
     }
     Save-AntojitInstallation -Installation $installation
     $environmentFile = Join-Path $root '.env.pilot'
+    if (-not (Test-Path -LiteralPath $environmentFile) -and $installation.EnvironmentCreated) {
+        throw 'Falta .env.pilot en una instalacion existente. Recupera su copia de respaldo para conservar las credenciales de la base.'
+    }
+    Initialize-AntojitRuntime -Installation $installation -AllowCreate:(-not $installation.Completed)
+    Assert-AntojitEnvironmentRecovery -PodmanPath $tools.PodmanPath -EnvironmentFile $environmentFile
     if (-not (Test-Path -LiteralPath $environmentFile)) {
-        if ($installation.EnvironmentCreated) {
-            throw 'Falta .env.pilot en una instalacion existente. Recupera su copia de respaldo para conservar las credenciales de la base.'
-        }
         Write-AntojitLog 'Generando secretos y codigos nuevos. Se guardan en .env.pilot; consulta ese archivo de forma privada para verlos.'
         Invoke-AntojitPilot -Root $root -Command 'init'
     } else { Write-AntojitLog 'Se conserva la configuracion y los codigos existentes.' }
@@ -264,7 +260,6 @@ try {
                 '-c', 'user.email=installer@antojit-os.local', '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=NUL', 'commit', '-m', 'Installation source snapshot')
         }
     }
-    Initialize-AntojitRuntime -Installation $installation -AllowCreate:(-not $installation.Completed)
     if ($installation.Completed) {
         Write-AntojitLog 'La instalacion ya estaba completa. Se inician sus imagenes existentes.'
         Invoke-AntojitPilot -Root $root -Command 'start'

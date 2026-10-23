@@ -147,6 +147,7 @@ describe("catálogo real del piloto", () => {
       ["Bote de $250", 10000],
     ]);
 
+    expect(byCode("FLAUTA")?.priceInCents).toBe(3500);
     expect(byCode("TOSTADA")?.priceInCents).toBe(3500);
     expect(byCode("TOSTADA-SENCILLA")?.priceInCents).toBe(2000);
     expect(byCode("TOSTADA")?.modifierGroups[0]?.options.map((option) => option.name)).toEqual([

@@ -151,7 +151,7 @@ function Get-AntojitInstallation {
         if ([int]$installation.$name -lt 1 -or [int]$installation.$name -gt 65535) { throw "Puerto invalido: $name." }
     }
     if ($installation.HttpPort -eq $installation.InternalHttpPort) { throw 'Los puertos publico e interno deben ser diferentes.' }
-    if ($installation.MachineName -notmatch '^[a-z][a-z0-9-]+$') { throw 'Nombre de maquina Podman invalido.' }
+    if ($installation.MachineName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$') { throw 'Nombre de maquina Podman invalido.' }
     return $installation
 }
 
@@ -189,6 +189,171 @@ function Assert-AntojitNoPendingUpdate {
     }
 }
 
+function Resolve-AntojitMachineName {
+    param([Parameter(Mandatory)][string]$PodmanPath)
+    $env:CONTAINERS_MACHINE_PROVIDER = 'wsl'
+    $json = @(Invoke-AntojitCommand -FilePath $PodmanPath -Arguments @('machine', 'list', '--format', 'json') -Capture) -join "`n"
+    # Windows PowerShell 5.1 emits a JSON array as a single pipeline value.
+    # Assign it first; wrapping the command itself would introduce a nested list.
+    $entries = $json | ConvertFrom-Json
+    $candidates = @($entries | Where-Object {
+        $_ -and (-not $_.PSObject.Properties['VMType'] -or $_.VMType -eq 'wsl')
+    })
+    $selected = @($candidates | Where-Object { $_.Name -eq 'antojitos-pilot' })
+    if ($selected.Count -eq 0) { $selected = @($candidates | Where-Object { $_.PSObject.Properties['Running'] -and $_.Running }) }
+    if ($selected.Count -ne 1) { $selected = @($candidates | Where-Object { $_.PSObject.Properties['Default'] -and $_.Default }) }
+    if ($selected.Count -ne 1 -and $candidates.Count -eq 1) { $selected = $candidates }
+    if ($candidates.Count -eq 0) {
+        if (@($entries | Where-Object { $_ -and $_.Name -eq 'antojitos-pilot' }).Count -gt 0) {
+            throw 'La maquina antojitos-pilot existente no usa WSL. Conserva esa maquina y selecciona un runtime WSL compatible.'
+        }
+        Write-AntojitLog 'No hay una maquina WSL disponible. Se creara antojitos-pilot durante la instalacion.'
+        return 'antojitos-pilot'
+    }
+    if ($selected.Count -ne 1) {
+        $names = ($candidates | ForEach-Object { $_.Name }) -join ', '
+        throw "Hay varias maquinas WSL sin una seleccion unica: $names. Establece una como predeterminada en Podman y repite la instalacion."
+    }
+    $name = [string]$selected[0].Name
+    if ($name -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$') { throw 'Nombre de maquina Podman invalido.' }
+    Write-AntojitLog "Se reutilizara la maquina Podman existente: $name."
+    return $name
+}
+
+function Assert-AntojitEnvironmentRecovery {
+    param([Parameter(Mandatory)][string]$PodmanPath, [Parameter(Mandatory)][string]$EnvironmentFile)
+    if (Test-Path -LiteralPath $EnvironmentFile) { return }
+    # A manually created VM is reusable. Existing application storage, rather
+    # than the presence of the VM, determines whether credentials need recovery.
+    $volumeJson = @(Invoke-AntojitCommand -FilePath $PodmanPath -Arguments @('volume', 'ls', '--format', 'json') -Capture) -join "`n"
+    $containerJson = @(Invoke-AntojitCommand -FilePath $PodmanPath -Arguments @('ps', '--all', '--format', 'json') -Capture) -join "`n"
+    $volumes = $volumeJson | ConvertFrom-Json
+    $containers = $containerJson | ConvertFrom-Json
+    $resources = @($volumes) + @($containers)
+    $recoveryMessage = 'La maquina contiene datos o contenedores de AntojitOS y falta .env.pilot. Recupera su configuracion anterior antes de generar credenciales nuevas.'
+    foreach ($resource in $resources) {
+        if ($null -eq $resource) { continue }
+        foreach ($propertyName in @('Name', 'Names')) {
+            $property = $resource.PSObject.Properties[$propertyName]
+            if ($null -eq $property) { continue }
+            foreach ($name in @($property.Value)) {
+                if ($name -in @('antojitos-pilot_pilot_postgres', 'antojitos-pilot_pilot_print_agent') -or
+                    $name -match '^antojitos-pilot[_-](?:postgres|api|web|print-agent)[_-][0-9]+$') {
+                    throw $recoveryMessage
+                }
+            }
+        }
+        $labels = $resource.PSObject.Properties['Labels']
+        if ($null -eq $labels -or $null -eq $labels.Value) { continue }
+        foreach ($labelName in @('com.docker.compose.project', 'io.podman.compose.project')) {
+            $label = $labels.Value.PSObject.Properties[$labelName]
+            if ($null -ne $label -and $label.Value -eq 'antojitos-pilot') { throw $recoveryMessage }
+        }
+    }
+}
+
+function Repair-AntojitPodmanProxy {
+    param([Parameter(Mandatory)][string]$PodmanPath, [Parameter(Mandatory)]$Machine, [Parameter(Mandatory)][string]$MachineName)
+    if ($MachineName -notmatch '^[a-zA-Z0-9][a-zA-Z0-9_.-]*$' -or $Machine.Rootful) {
+        throw 'La recuperacion requiere la maquina rootless seleccionada en la instalacion.'
+    }
+    $proxy = Join-Path (Split-Path -Parent $PodmanPath) 'win-sshproxy.exe'
+    if (-not (Test-Path -LiteralPath $proxy -PathType Leaf)) {
+        throw "Falta el auxiliar de Podman: $proxy. Repara la instalacion de Podman antes de reintentar."
+    }
+    if (-not $Machine.PSObject.Properties['SSHConfig']) { throw 'Podman no informa su configuracion SSH.' }
+    $ssh = $Machine.SSHConfig
+    if ($ssh.RemoteUsername -notmatch '^[a-zA-Z0-9_-]+$' -or [int]$ssh.Port -lt 1 -or [int]$ssh.Port -gt 65535 -or
+        -not (Test-Path -LiteralPath $ssh.IdentityPath -PathType Leaf)) {
+        throw 'La configuracion SSH de la maquina Podman esta incompleta.'
+    }
+    $pipe = [string]$Machine.ConnectionInfo.PodmanPipe.Path
+    if (-not $pipe.StartsWith('\\.\pipe\', [StringComparison]::OrdinalIgnoreCase) -or $pipe.Length -le 9 -or $pipe.Substring(9) -match '[/\\]') {
+        throw 'El auxiliar de Podman requiere un named pipe local de Windows.'
+    }
+    $dataHome = $env:XDG_DATA_HOME
+    if (-not $dataHome) { $dataHome = Join-Path ([Environment]::GetFolderPath('UserProfile')) '.local\share' }
+    $stateDirectory = Join-Path $dataHome ('containers\podman\machine\wsl\' + $MachineName)
+    $threadFile = Join-Path $stateDirectory 'win-sshproxy.tid'
+    if (Test-Path -LiteralPath $threadFile -PathType Leaf) {
+        $thread = ([IO.File]::ReadAllText($threadFile)).Trim()
+        if ($thread -match '^([0-9]+):[0-9]+$') {
+            $proxyProcessId = [int]$Matches[1]
+            $existing = Get-Process -Id $proxyProcessId -ErrorAction SilentlyContinue
+            if ($existing -and $existing.ProcessName -eq 'win-sshproxy') {
+                Write-AntojitLog 'win-sshproxy sigue activo. Se esperara a su API sin duplicarlo ni detener la maquina.'
+                return
+            }
+        }
+    }
+    New-Item -ItemType Directory -Path $stateDirectory -Force | Out-Null
+    $logPath = Get-AntojitLogPath
+    $logDirectory = if ($logPath) { Split-Path -Parent $logPath } else { $stateDirectory }
+    $logBase = Join-Path $logDirectory ('win-sshproxy-' + [guid]::NewGuid().ToString('N'))
+    # Podman 6.1.4 / gvisor-tap-vsock 0.9.0 positional protocol. Forward only
+    # this machine's pipe; global docker_engine and Unix sockets are unnecessary.
+    # Preserve Podman's state directory so `machine stop` can stop this proxy too.
+    $arguments = @($MachineName, $stateDirectory, ('npipe://' + $pipe.Replace('\', '/')),
+        ('ssh://{0}@localhost:{1}/run/user/1000/podman/podman.sock' -f $ssh.RemoteUsername, $ssh.Port), [string]$ssh.IdentityPath)
+    $argumentLine = @($arguments | ForEach-Object { ConvertTo-AntojitNativeArgument $_ }) -join ' '
+    Write-AntojitLog "Recuperando el puente local de Podman. Diagnostico: $logBase.stderr.log"
+    $process = Start-Process -FilePath $proxy -ArgumentList $argumentLine -WindowStyle Hidden -PassThru `
+        -RedirectStandardOutput "$logBase.stdout.log" -RedirectStandardError "$logBase.stderr.log"
+    try { Write-AntojitLog "win-sshproxy iniciado (PID $($process.Id)); se comprobara la API de Compose." }
+    finally { $process.Dispose() }
+}
+
+function Initialize-AntojitComposeConnection {
+    param([Parameter(Mandatory)]$Installation, [Parameter(Mandatory)][string]$PodmanPath, [int]$TimeoutSeconds = 180)
+    # Starting WSL can change the SSH port. Inspect again before repairing its proxy.
+    $details = @(Invoke-AntojitCommand -FilePath $PodmanPath -Arguments @('machine', 'inspect', $Installation.MachineName) -Capture) -join "`n"
+    $decoded = $details | ConvertFrom-Json
+    $machine = @($decoded)[0]
+    if ($machine.Rootful) { throw 'La maquina cambio a rootful. Restaura su conexion rootless antes de continuar; el almacenamiento es distinto.' }
+    if (-not $machine.PSObject.Properties['ConnectionInfo'] -or
+        -not $machine.ConnectionInfo.PSObject.Properties['PodmanPipe'] -or
+        -not $machine.ConnectionInfo.PodmanPipe.PSObject.Properties['Path']) {
+        throw 'Podman no informa el canal local que necesita Compose. Revisa la maquina WSL seleccionada.'
+    }
+    $pipe = [string]$machine.ConnectionInfo.PodmanPipe.Path
+    if (-not $pipe.StartsWith('\\.\pipe\', [StringComparison]::OrdinalIgnoreCase) -or $pipe.Substring(9) -match '[/\\]' -or $pipe.Length -le 9) {
+        throw 'El canal de Compose no es un named pipe local de Windows.'
+    }
+    $env:DOCKER_HOST = 'npipe://' + $pipe.Replace('\', '/')
+    foreach ($name in @('DOCKER_CONTEXT', 'DOCKER_TLS', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH')) {
+        Remove-Item "Env:$name" -ErrorAction SilentlyContinue
+    }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $repairAttempted = $false
+    $repairError = ''
+    while ($true) {
+        try {
+            # `ls` contacts the Docker API without a project or .env.pilot. Call
+            # the provider directly so its timeout also terminates the API client.
+            $remaining = [Math]::Max(1, [Math]::Min(10, [int][Math]::Ceiling(($deadline - (Get-Date)).TotalSeconds)))
+            $null = Invoke-AntojitNative -FilePath $Installation.ComposeProviderPath -Arguments @('ls', '--format', 'json') -TimeoutSeconds $remaining
+            Write-AntojitLog 'La conexion local de Compose esta lista.'
+            return
+        } catch {
+            $connectionError = $_.Exception.Message
+        }
+        if (-not $repairAttempted) {
+            $repairAttempted = $true
+            Write-AntojitLog 'Podman responde, pero Compose no se conecta. Se intentara recuperar su puente local una vez.'
+            try { Repair-AntojitPodmanProxy -PodmanPath $PodmanPath -Machine $machine -MachineName $Installation.MachineName }
+            catch {
+                $repairError = $_.Exception.Message
+                Write-AntojitLog "No se pudo recuperar win-sshproxy: $repairError"
+            }
+            continue
+        }
+        if ((Get-Date) -ge $deadline) {
+            throw "La conexion de Compose no estuvo lista a tiempo. Podman responde, pero no se pudo usar la API a traves de win-sshproxy. Revisa los eventos de Windows y los logs de esta ejecucion. Compose: $connectionError Recuperacion: $repairError"
+        }
+        Start-Sleep -Seconds 2
+    }
+}
+
 function Initialize-AntojitRuntime {
     param([Parameter(Mandatory)]$Installation, [switch]$AllowCreate, [int]$TimeoutSeconds = 180)
     Update-AntojitPath
@@ -203,30 +368,35 @@ function Initialize-AntojitRuntime {
     # A shell-level remote override must not redirect this restaurant's commands.
     Remove-Item Env:CONTAINER_HOST -ErrorAction SilentlyContinue
     $machines = @(Invoke-AntojitCommand -FilePath $podman -Arguments @('machine', 'list', '--format', 'json') -Capture) -join "`n"
-    $entries = @($machines | ConvertFrom-Json)
-    $found = @($entries | Where-Object { $_.Name -eq $Installation.MachineName })
+    $entries = $machines | ConvertFrom-Json
+    $found = @($entries | Where-Object { $_ -and $_.Name -eq $Installation.MachineName })
     if ($found.Count -eq 0) {
         if (-not $AllowCreate) { throw 'La maquina Podman no existe. Ejecuta final_script.cmd y elige 1 (Instalar); el inicio diario no crea ni reinstala componentes.' }
         Invoke-AntojitCommand -FilePath $podman -Arguments @('machine', 'init', '--rootful=false', $Installation.MachineName)
     }
     $details = @(Invoke-AntojitCommand -FilePath $podman -Arguments @('machine', 'inspect', $Installation.MachineName) -Capture) -join "`n"
-    $machine = @($details | ConvertFrom-Json)[0]
+    $decoded = $details | ConvertFrom-Json
+    $machine = @($decoded)[0]
     if ($machine.Rootful) { throw 'La maquina cambio a rootful. Restaura su conexion rootless antes de continuar; el almacenamiento es distinto.' }
     if ($machine.State -ne 'running') {
         Write-AntojitLog 'Iniciando la maquina local de Podman...'
         Invoke-AntojitCommand -FilePath $podman -Arguments @('machine', 'start', $Installation.MachineName)
+    } else {
+        Write-AntojitLog "La maquina Podman $($Installation.MachineName) ya esta encendida; se usara sin recrearla."
     }
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $os = ''
     do {
         try {
             $os = @(Invoke-AntojitCommand -FilePath $podman -Arguments @('info', '--format', '{{.Host.OS}}') -Capture) -join ''
-            if ($os.Trim() -eq 'linux') { return }
+            if ($os.Trim() -eq 'linux') { break }
         } catch {
             if ((Get-Date) -ge $deadline) { throw 'Podman no estuvo listo a tiempo. Revisa WSL, ejecuta final_script.cmd y elige 2 (Iniciar).' }
         }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
-    throw 'Podman no respondio como un motor Linux local.'
+    if ($os.Trim() -ne 'linux') { throw 'Podman no respondio como un motor Linux local.' }
+    Initialize-AntojitComposeConnection -Installation $Installation -PodmanPath $podman -TimeoutSeconds $TimeoutSeconds
 }
 
 function Invoke-AntojitCompose {
@@ -288,6 +458,7 @@ function Update-AntojitNetwork {
 Export-ModuleMember -Function Start-AntojitLog, Write-AntojitLog, Get-AntojitLogPath, Write-AntojitError, Invoke-AntojitCommand, Enter-AntojitOperation,
     Protect-AntojitPath, Test-AntojitRepositoryUrl, Get-AntojitInstallation, Save-AntojitInstallation,
     Resolve-AntojitInstallPath,
-    Assert-AntojitOwner, Assert-AntojitNoPendingUpdate, Initialize-AntojitRuntime, Invoke-AntojitCompose, Invoke-AntojitPilot,
+    Assert-AntojitOwner, Assert-AntojitNoPendingUpdate, Resolve-AntojitMachineName, Assert-AntojitEnvironmentRecovery,
+    Initialize-AntojitRuntime, Invoke-AntojitCompose, Invoke-AntojitPilot,
     Set-AntojitEnvironmentValue, Update-AntojitNetwork, Assert-AntojitWindows, Assert-AntojitAdministrator,
     Update-AntojitPath, Get-AntojitNode, Get-AntojitGit, Get-AntojitPodman, Install-AntojitDependencies

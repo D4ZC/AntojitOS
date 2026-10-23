@@ -95,6 +95,7 @@ interface PrintJobRow extends DatabaseRow {
   kind:
     | "addition"
     | "cancellation"
+    | "note_update"
     | "reprint"
     | "receipt"
     | "receipt_reprint"
@@ -267,6 +268,83 @@ export class ProductionService {
       planned.push({ ticketId, centerId: center.id, jobId });
     }
 
+    return planned;
+  }
+
+  async planNoteUpdate(
+    transaction: DatabaseSession,
+    input: { siteId: string; accountId: string; itemId: string; previousNote: string | null },
+  ): Promise<Array<{ ticketId: string; jobId: string }>> {
+    const result = await transaction.query<{
+      ticket_id: string;
+      production_center_id: string;
+      center_code: string;
+      center_name: string;
+      round_sequence: number;
+      service_type: "table" | "quick" | "takeaway";
+      table_name: string | null;
+      reference: string | null;
+      product_name: string;
+      quantity: number;
+      note: string | null;
+      modifiers: string[] | string;
+    }>(
+      `SELECT tickets.id AS ticket_id, tickets.production_center_id,
+              centers.code AS center_code, centers.name AS center_name,
+              tickets.round_sequence, accounts.service_type, accounts.reference,
+              tables.name AS table_name, items.product_name, items.quantity,
+              items.note, ticket_items.modifiers
+         FROM production_ticket_items ticket_items
+         JOIN production_tickets tickets ON tickets.id = ticket_items.ticket_id
+           AND tickets.kind = 'addition'
+         JOIN production_centers centers ON centers.id = tickets.production_center_id
+         JOIN order_items items ON items.id = ticket_items.order_item_id
+         JOIN service_accounts accounts ON accounts.id = items.account_id
+         LEFT JOIN service_tables tables ON tables.id = accounts.table_id
+        WHERE items.id = $1 AND items.account_id = $2 AND items.site_id = $3
+        FOR UPDATE OF tickets, ticket_items`,
+      [input.itemId, input.accountId, input.siteId],
+    );
+    const planned: Array<{ ticketId: string; jobId: string }> = [];
+    for (const row of result.rows) {
+      await transaction.query(
+        `UPDATE production_ticket_items SET note = $3
+          WHERE ticket_id = $1 AND order_item_id = $2`,
+        [row.ticket_id, input.itemId, row.note],
+      );
+      const payload = {
+        ticketId: row.ticket_id,
+        kind: "note_update",
+        previousNote: input.previousNote,
+        center: { id: row.production_center_id, code: row.center_code, name: row.center_name },
+        service: {
+          accountId: input.accountId,
+          type: row.service_type,
+          label: row.table_name ?? row.reference ?? (
+            row.service_type === "takeaway" ? "Para llevar" : "Venta rápida"
+          ),
+        },
+        roundSequence: row.round_sequence,
+        items: [{
+          productName: row.product_name,
+          quantity: row.quantity,
+          note: row.note,
+          modifiers: parseJson<string[]>(row.modifiers),
+        }],
+      };
+      const jobId = randomUUID();
+      await transaction.query(
+        `INSERT INTO print_jobs (id, site_id, ticket_id, kind, payload)
+          VALUES ($1, $2, $3, 'note_update', $4::jsonb)`,
+        [jobId, input.siteId, row.ticket_id, JSON.stringify(payload)],
+      );
+      await this.outbox.enqueue(transaction, {
+        id: randomUUID(), siteId: input.siteId,
+        eventType: "production.ticket.updated", aggregateType: "production_ticket",
+        aggregateId: row.ticket_id, payload,
+      });
+      planned.push({ ticketId: row.ticket_id, jobId });
+    }
     return planned;
   }
 

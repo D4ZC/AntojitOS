@@ -1,0 +1,6 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+ENV NGINX_ENVSUBST_FILTER=CONTAINER_DNS_RESOLVER
+COPY --chmod=755 15-container-resolver.envsh /docker-entrypoint.d/15-container-resolver.envsh
+COPY nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY dist/ /usr/share/nginx/html/

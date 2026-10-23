@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="es">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Abrir comandas — AntojitOS</title>
+<style>body{font:20px system-ui;background:#171717;color:#fafafa;max-width:42rem;margin:15vh auto;padding:1.5rem}a{color:#ffb36b}</style>
+<h1>Abriendo pantalla de cocina…</h1>
+<p id="status">Actualizando la pantalla. Se conservan tus accesos guardados.</p>
+<script>
+(async () => {
+  try {
+    if ("serviceWorker" in navigator) {
+      const registration = await navigator.serviceWorker.getRegistration("/");
+      if (registration) await registration.unregister();
+    }
+    if ("caches" in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.filter(key => key.startsWith("antojit-os-shell-"))
+        .map(key => caches.delete(key)));
+    }
+    location.replace("/kds/?v=" + Date.now());
+  } catch (error) {
+    document.getElementById("status").textContent = "No se pudo renovar la pantalla: " + error.message;
+  }
+})();
+</script>
+</html>

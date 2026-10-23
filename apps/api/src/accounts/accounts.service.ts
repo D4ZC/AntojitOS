@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -32,6 +33,7 @@ import type { SendRoundDto } from "./dto/send-round.dto.js";
 import type { SplitAccountDto } from "./dto/split-account.dto.js";
 import type { TransferAccountItemsDto } from "./dto/transfer-account-items.dto.js";
 import type { UpdateAccountContextDto } from "./dto/update-account-context.dto.js";
+import type { UpdateAccountDetailsDto } from "./dto/update-account-details.dto.js";
 import type { UpdateOrderItemDto } from "./dto/update-order-item.dto.js";
 import type { VoidAccountAdjustmentDto } from "./dto/void-account-adjustment.dto.js";
 
@@ -43,6 +45,14 @@ interface AccountRow extends DatabaseRow {
   service_type: "table" | "quick" | "takeaway";
   status: string;
   reference: string | null;
+  customer_name: string | null;
+  scheduled_for: Date | string | null;
+  schedule_dispatched_at: Date | string | null;
+  schedule_last_error: string | null;
+  scheduled_by_user_id: string | null;
+  scheduled_on_terminal_id: string | null;
+  opened_by_user_id: string;
+  opened_on_terminal_id: string;
   guest_count: number;
   version: number;
   responsible_user_id: string;
@@ -128,6 +138,30 @@ const assertAccountMutable = (account: AccountRow | undefined): AccountRow => {
   return account;
 };
 
+const optionalDate = (value: Date | string | null): string | null =>
+  value ? new Date(value).toISOString() : null;
+
+const scheduledDate = (value: string | null | undefined): string | null => {
+  if (value == null) return null;
+  // A timezone is required so an order is never silently scheduled in server time.
+  const timestamp = Date.parse(value);
+  if (!/(?:Z|[+-]\d{2}:\d{2})$/i.test(value) || !Number.isFinite(timestamp)) {
+    throw new BadRequestException("La fecha programada debe incluir fecha, hora y zona horaria");
+  }
+  if (timestamp <= Date.now()) {
+    throw new BadRequestException("La hora programada debe estar en el futuro");
+  }
+  return new Date(timestamp).toISOString();
+};
+
+const customerName = (value: string | null | undefined): string | null => {
+  if (value == null) return null;
+  if (typeof value !== "string" || value.length > 80) {
+    throw new BadRequestException("El nombre del cliente debe tener hasta 80 caracteres");
+  }
+  return value.trim() || null;
+};
+
 @Injectable()
 export class AccountsService {
   constructor(
@@ -152,6 +186,8 @@ export class AccountsService {
       `SELECT
          accounts.id, accounts.site_id, accounts.table_id, tables.name AS table_name,
          accounts.service_type, accounts.status, accounts.reference,
+         accounts.customer_name, accounts.scheduled_for, accounts.schedule_dispatched_at,
+         accounts.schedule_last_error,
          accounts.guest_count, accounts.version, accounts.opened_at,
          accounts.responsible_user_id, users.display_name AS responsible_user_name,
          accounts.account_group_id, accounts.is_primary
@@ -258,6 +294,10 @@ export class AccountsService {
       serviceType: account.service_type,
       status: account.status,
       reference: account.reference,
+      customerName: account.customer_name,
+      scheduledFor: optionalDate(account.scheduled_for),
+      scheduleDispatchedAt: optionalDate(account.schedule_dispatched_at),
+      scheduleError: account.schedule_last_error,
       guestCount: account.guest_count,
       version: account.version,
       accountGroupId: account.account_group_id,
@@ -300,6 +340,8 @@ export class AccountsService {
         requestHash: requestHash(input),
       },
       async (transaction) => {
+        const scheduledFor = scheduledDate(input.scheduledFor);
+        const name = customerName(input.customerName);
         if (input.serviceType === "table") {
           if (!input.tableId) {
             throw new BadRequestException("Se requiere mesa para este servicio");
@@ -332,8 +374,11 @@ export class AccountsService {
             `INSERT INTO service_accounts (
               id, site_id, table_id, service_type, reference, guest_count,
               opened_by_user_id, opened_on_terminal_id, responsible_user_id,
-              account_group_id
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $7, $1)`,
+              account_group_id, customer_name, scheduled_for,
+              scheduled_by_user_id, scheduled_on_terminal_id
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $7, $1, $9, $10,
+                CASE WHEN $10::timestamptz IS NULL THEN NULL ELSE $7::uuid END,
+                CASE WHEN $10::timestamptz IS NULL THEN NULL ELSE $8::uuid END)`,
             [
               id,
               actor.siteId,
@@ -343,6 +388,8 @@ export class AccountsService {
               input.guestCount,
               actor.userId,
               actor.terminalId,
+              name,
+              scheduledFor,
             ],
           );
         } catch (error) {
@@ -357,6 +404,10 @@ export class AccountsService {
           tableId: input.tableId ?? null,
           serviceType: input.serviceType,
           reference: input.reference ?? null,
+          customerName: name,
+          scheduledFor,
+          scheduleDispatchedAt: null,
+          scheduleError: null,
           guestCount: input.guestCount,
           status: "open",
           version: 0,
@@ -543,17 +594,36 @@ export class AccountsService {
           actor.siteId,
           input.expectedVersion,
         );
-        const item = await transaction.query<{ id: string }>(
-          `UPDATE order_items
-              SET quantity = $4, note = $5, updated_at = now()
-            WHERE id = $1 AND account_id = $2 AND site_id = $3
-              AND preparation_state = 'pending'
-          RETURNING id`,
-          [itemId, accountId, actor.siteId, input.quantity, input.note ?? null],
+        const selected = await transaction.query<{
+          id: string;
+          quantity: number;
+          note: string | null;
+          preparation_state: string;
+          round_id: string | null;
+        }>(
+          `SELECT id, quantity, note, preparation_state, round_id FROM order_items
+            WHERE id = $1 AND account_id = $2 AND site_id = $3 FOR UPDATE`,
+          [itemId, accountId, actor.siteId],
         );
-        if (item.rowCount === 0) {
-          throw new ConflictException("Sólo se pueden modificar artículos pendientes");
+        const item = selected.rows[0];
+        if (!item) throw new NotFoundException("Artículo inexistente");
+        if (item.preparation_state === "cancelled") {
+          throw new ConflictException("No se puede modificar un artículo cancelado");
         }
+        if (item.preparation_state !== "pending" && input.quantity !== item.quantity) {
+          throw new ConflictException("La cantidad de un artículo enviado no se puede modificar");
+        }
+        const note = input.note === undefined ? item.note : input.note?.trim() || null;
+        await transaction.query(
+          `UPDATE order_items SET quantity = $4, note = $5, updated_at = now()
+            WHERE id = $1 AND account_id = $2 AND site_id = $3`,
+          [itemId, accountId, actor.siteId, input.quantity, note],
+        );
+        const production = item.preparation_state !== "pending" && item.note !== note
+          ? await this.production.planNoteUpdate(transaction, {
+              siteId: actor.siteId, accountId, itemId, previousNote: item.note,
+            })
+          : null;
         const nextVersion = account.version + 1;
         await transaction.query(
           `UPDATE service_accounts
@@ -564,7 +634,8 @@ export class AccountsService {
         const body = {
           itemId,
           quantity: input.quantity,
-          note: input.note ?? null,
+          note,
+          production,
           accountVersion: nextVersion,
         };
         await this.audit.append(transaction, {
@@ -610,94 +681,142 @@ export class AccountsService {
           actor.siteId,
           input.expectedVersion,
         );
-        const pending = await transaction.query<RoundItemRow>(
-          `SELECT id, product_name, quantity, note, production_center_id
-             FROM order_items
-            WHERE account_id = $1 AND site_id = $2
-              AND preparation_state = 'pending'
-            ORDER BY created_at, id
-            FOR UPDATE`,
-          [accountId, actor.siteId],
-        );
-        if (pending.rowCount === 0) {
-          throw new ConflictException("La cuenta no tiene artículos pendientes");
-        }
-        const sequenceResult = await transaction.query<{ next_sequence: number }>(
-          `SELECT COALESCE(max(sequence), 0)::integer + 1 AS next_sequence
-             FROM order_rounds WHERE account_id = $1`,
-          [accountId],
-        );
-        const sequence = sequenceResult.rows[0]?.next_sequence ?? 1;
-        const roundId = randomUUID();
-        await transaction.query(
-          `INSERT INTO order_rounds (
-            id, site_id, account_id, sequence, sent_by_user_id,
-            sent_on_terminal_id
-          ) VALUES ($1, $2, $3, $4, $5, $6)`,
-          [
-            roundId,
-            actor.siteId,
-            accountId,
-            sequence,
-            actor.userId,
-            actor.terminalId,
-          ],
-        );
-        await transaction.query(
-          `UPDATE order_items
-              SET round_id = $3, preparation_state = 'sent', updated_at = now()
-            WHERE account_id = $1 AND site_id = $2
-              AND preparation_state = 'pending'`,
-          [accountId, actor.siteId, roundId],
-        );
-        const nextVersion = account.version + 1;
-        await transaction.query(
-          `UPDATE service_accounts
-              SET version = $3, updated_at = now()
-            WHERE id = $1 AND site_id = $2`,
-          [accountId, actor.siteId, nextVersion],
-        );
-        const production = await this.production.planRound(transaction, {
-          siteId: actor.siteId,
-          accountId,
-          roundId,
-          roundSequence: sequence,
-        });
-        const body = {
-          roundId,
-          sequence,
-          accountVersion: nextVersion,
-          production,
-          items: pending.rows.map((item) => ({
-            id: item.id,
-            productName: item.product_name,
-            quantity: item.quantity,
-            note: item.note,
-            productionCenterId: item.production_center_id,
-          })),
-        };
-        await this.audit.append(transaction, {
-          id: randomUUID(),
-          siteId: actor.siteId,
-          actorUserId: actor.userId,
-          terminalId: actor.terminalId,
-          action: "order_round.sent",
-          entityType: "service_account",
-          entityId: accountId,
-          changes: { roundId, sequence, itemCount: pending.rowCount },
-        });
-        await this.outbox.enqueue(transaction, {
-          id: randomUUID(),
-          siteId: actor.siteId,
-          eventType: "order.round.submitted",
-          aggregateType: "service_account",
-          aggregateId: accountId,
-          payload: body,
-        });
-
-        return { status: 201, body };
+        return this.dispatchRound(transaction, account, actor);
       },
     );
+  }
+
+  async dispatchScheduledAccount(accountId: string): Promise<boolean> {
+    return this.database.transaction(async (transaction) => {
+      // The lock covers selection, production planning and the dispatch marker.
+      // A second server skips an order that another server is already sending.
+      const selected = await transaction.query<AccountRow>(
+        `SELECT * FROM service_accounts
+          WHERE id = $1 AND status = 'open' AND scheduled_for <= now()
+            AND schedule_dispatched_at IS NULL
+            AND EXISTS (
+              SELECT 1 FROM order_items items WHERE items.account_id = service_accounts.id
+                AND items.preparation_state = 'pending'
+            )
+          FOR UPDATE SKIP LOCKED`,
+        [accountId],
+      );
+      const account = selected.rows[0];
+      if (!account) return false;
+      const actor: AuthContext = {
+        sessionId: "scheduled-order",
+        siteId: account.site_id,
+        userId: account.scheduled_by_user_id ?? account.opened_by_user_id,
+        terminalId: account.scheduled_on_terminal_id ?? account.opened_on_terminal_id,
+        displayName: "Pedido programado",
+        permissions: [],
+      };
+      await this.dispatchRound(transaction, account, actor);
+      return true;
+    });
+  }
+
+  private async dispatchRound(
+    transaction: DatabaseSession,
+    account: AccountRow,
+    actor: AuthContext,
+  ) {
+    const accountId = account.id;
+    if (account.scheduled_for && !account.schedule_dispatched_at &&
+        new Date(account.scheduled_for).getTime() > Date.now()) {
+      throw new ConflictException("El pedido se enviará a la hora programada; quita la programación para enviarlo ahora");
+    }
+    const pending = await transaction.query<RoundItemRow>(
+      `SELECT id, product_name, quantity, note, production_center_id
+         FROM order_items
+        WHERE account_id = $1 AND site_id = $2
+          AND preparation_state = 'pending'
+        ORDER BY created_at, id
+        FOR UPDATE`,
+      [accountId, actor.siteId],
+    );
+    if (pending.rowCount === 0) {
+      throw new ConflictException("La cuenta no tiene artículos pendientes");
+    }
+    const sequenceResult = await transaction.query<{ next_sequence: number }>(
+      `SELECT COALESCE(max(sequence), 0)::integer + 1 AS next_sequence
+         FROM order_rounds WHERE account_id = $1`,
+      [accountId],
+    );
+    const sequence = sequenceResult.rows[0]?.next_sequence ?? 1;
+    const roundId = randomUUID();
+    await transaction.query(
+      `INSERT INTO order_rounds (
+        id, site_id, account_id, sequence, sent_by_user_id,
+        sent_on_terminal_id
+      ) VALUES ($1, $2, $3, $4, $5, $6)`,
+      [
+        roundId,
+        actor.siteId,
+        accountId,
+        sequence,
+        actor.userId,
+        actor.terminalId,
+      ],
+    );
+    await transaction.query(
+      `UPDATE order_items
+          SET round_id = $3, preparation_state = 'sent', updated_at = now()
+        WHERE account_id = $1 AND site_id = $2
+          AND preparation_state = 'pending'`,
+      [accountId, actor.siteId, roundId],
+    );
+    const nextVersion = account.version + 1;
+    await transaction.query(
+      `UPDATE service_accounts
+          SET version = $3, updated_at = now(),
+                  schedule_retry_after = NULL, schedule_last_error = NULL,
+                  schedule_dispatched_at = CASE
+                    WHEN scheduled_for IS NOT NULL AND schedule_dispatched_at IS NULL
+                    THEN now() ELSE schedule_dispatched_at END
+        WHERE id = $1 AND site_id = $2`,
+      [accountId, actor.siteId, nextVersion],
+    );
+    const production = await this.production.planRound(transaction, {
+      siteId: actor.siteId,
+      accountId,
+      roundId,
+      roundSequence: sequence,
+    });
+    const body = {
+      accountId,
+      roundId,
+      sequence,
+      accountVersion: nextVersion,
+      production,
+      items: pending.rows.map((item) => ({
+        id: item.id,
+        productName: item.product_name,
+        quantity: item.quantity,
+        note: item.note,
+        productionCenterId: item.production_center_id,
+      })),
+    };
+    await this.audit.append(transaction, {
+      id: randomUUID(),
+      siteId: actor.siteId,
+      actorUserId: actor.userId,
+      terminalId: actor.terminalId,
+      action: "order_round.sent",
+      entityType: "service_account",
+      entityId: accountId,
+      changes: { roundId, sequence, itemCount: pending.rowCount },
+    });
+    await this.outbox.enqueue(transaction, {
+      id: randomUUID(),
+      siteId: actor.siteId,
+      eventType: "order.round.submitted",
+      aggregateType: "service_account",
+      aggregateId: accountId,
+      payload: body,
+    });
+
+    return { status: 201, body };
   }
 
   cancelItem(
@@ -820,6 +939,10 @@ export class AccountsService {
           .reduce((total, item) => total + item.quantity, 0),
         totalInCents: account.totalInCents,
         isPrimary: account.isPrimary,
+        customerName: account.customerName,
+        scheduledFor: account.scheduledFor,
+        scheduleDispatchedAt: account.scheduleDispatchedAt,
+        scheduleError: account.scheduleError,
       })),
     };
   }
@@ -858,6 +981,10 @@ export class AccountsService {
           .reduce((total, item) => total + item.quantity, 0),
         totalInCents: account.totalInCents,
         openedAt: new Date(row.opened_at).toISOString(),
+        customerName: account.customerName,
+        scheduledFor: account.scheduledFor,
+        scheduleDispatchedAt: account.scheduleDispatchedAt,
+        scheduleError: account.scheduleError,
       })),
     };
   }
@@ -1093,11 +1220,21 @@ export class AccountsService {
     );
   }
 
+  updateDetails(
+    accountId: string,
+    input: UpdateAccountDetailsDto,
+    key: string,
+    actor: AuthContext,
+  ) {
+    return this.updateContext(accountId, input, key, actor, true);
+  }
+
   updateContext(
     accountId: string,
     input: UpdateAccountContextDto,
     key: string,
     actor: AuthContext,
+    detailsOnly = false,
   ) {
     return this.idempotency.execute(
       {
@@ -1113,9 +1250,21 @@ export class AccountsService {
           actor.siteId,
           input.expectedVersion,
         );
-        if (!input.tableId && !input.responsibleUserId) {
-          throw new BadRequestException("Indica una mesa o un responsable");
+        if (detailsOnly && !actor.permissions.includes("service.account.manage") &&
+            account.responsible_user_id !== actor.userId) {
+          throw new ForbiddenException("Sólo puedes editar los datos de tus pedidos");
         }
+        if (detailsOnly && (input.tableId || input.responsibleUserId)) {
+          throw new ForbiddenException("Los datos del pedido no permiten cambiar mesa ni responsable");
+        }
+        if (!input.tableId && !input.responsibleUserId &&
+            input.customerName === undefined && input.scheduledFor === undefined) {
+          throw new BadRequestException("Indica los datos del pedido que deseas actualizar");
+        }
+        const name = input.customerName === undefined
+          ? account.customer_name : customerName(input.customerName);
+        const scheduledFor = input.scheduledFor === undefined
+          ? optionalDate(account.scheduled_for) : scheduledDate(input.scheduledFor);
         if (input.responsibleUserId) {
           const user = await transaction.query(
             `SELECT id FROM app_users
@@ -1124,6 +1273,18 @@ export class AccountsService {
           );
           if (user.rowCount === 0) throw new NotFoundException("Responsable inexistente");
         }
+        await transaction.query(
+          `UPDATE service_accounts
+              SET customer_name = $3, scheduled_for = $4,
+                  schedule_dispatched_at = CASE WHEN $5 THEN NULL ELSE schedule_dispatched_at END,
+                  schedule_retry_after = CASE WHEN $5 THEN NULL ELSE schedule_retry_after END,
+                  schedule_last_error = CASE WHEN $5 THEN NULL ELSE schedule_last_error END,
+                  scheduled_by_user_id = CASE WHEN $5 THEN $6 ELSE scheduled_by_user_id END,
+                  scheduled_on_terminal_id = CASE WHEN $5 THEN $7 ELSE scheduled_on_terminal_id END
+            WHERE id = $1 AND site_id = $2`,
+          [accountId, actor.siteId, name, scheduledFor, input.scheduledFor !== undefined,
+            scheduledFor ? actor.userId : null, scheduledFor ? actor.terminalId : null],
+        );
         if (input.tableId && input.tableId !== account.table_id) {
           if (account.service_type !== "table") {
             throw new BadRequestException("Sólo una cuenta de comedor puede cambiar de mesa");
@@ -1170,6 +1331,11 @@ export class AccountsService {
           accountVersion,
           tableId: input.tableId ?? account.table_id,
           responsibleUserId: input.responsibleUserId ?? account.responsible_user_id,
+          customerName: name,
+          scheduledFor,
+          scheduleDispatchedAt: input.scheduledFor === undefined
+            ? optionalDate(account.schedule_dispatched_at) : null,
+          scheduleError: input.scheduledFor === undefined ? account.schedule_last_error : null,
         };
         await this.recordAccountEvent(transaction, actor, {
           action: "account.context.updated",
@@ -1202,6 +1368,7 @@ export class AccountsService {
           actor.siteId,
           input.expectedVersion,
         );
+        this.assertNotAwaitingScheduledDispatch(source);
         await this.assertNoActiveAdjustments(transaction, [accountId]);
         const destinationAccountId = randomUUID();
         await transaction.query(
@@ -1279,6 +1446,7 @@ export class AccountsService {
           destinationExpectedVersion: input.destinationExpectedVersion,
           siteId: actor.siteId,
         });
+        this.assertNotAwaitingScheduledDispatch(source, destination);
         await this.assertNoActiveAdjustments(transaction, [source.id, destination.id]);
         await this.moveItems(transaction, {
           sourceAccountId: source.id,
@@ -1336,21 +1504,30 @@ export class AccountsService {
           actor.siteId,
           input.expectedVersion,
         );
-        const activeItems = await transaction.query<{ id: string }>(
-          `SELECT id
+        if (!actor.permissions.includes("service.account.manage") &&
+            (account.service_type === "table" || account.responsible_user_id !== actor.userId)) {
+          throw new ForbiddenException("Sólo puedes descartar tus pedidos de mostrador");
+        }
+        const activeItems = await transaction.query<{ id: string; preparation_state: string }>(
+          `SELECT id, preparation_state
              FROM order_items
             WHERE account_id = $1 AND site_id = $2
               AND preparation_state <> 'cancelled'
-            LIMIT 1
             FOR UPDATE`,
           [accountId, actor.siteId],
         );
-        if (activeItems.rowCount > 0) {
+        if (activeItems.rows.some((item) => item.preparation_state !== "pending") ||
+            (account.service_type === "table" && activeItems.rowCount > 0)) {
           throw new ConflictException(
             "Cancela o transfiere todos los artículos antes de cancelar la cuenta",
           );
         }
         await this.assertNoActiveAdjustments(transaction, [accountId]);
+        await transaction.query(
+          `UPDATE order_items SET preparation_state = 'cancelled', updated_at = now()
+            WHERE account_id = $1 AND site_id = $2 AND preparation_state = 'pending'`,
+          [accountId, actor.siteId],
+        );
 
         let promotedAccountId: string | null = null;
         if (account.is_primary) {
@@ -1390,6 +1567,7 @@ export class AccountsService {
           status: "cancelled" as const,
           tableId: account.table_id,
           promotedAccountId,
+          cancelledItemIds: activeItems.rows.map((item) => item.id),
           reason: input.reason,
         };
         await this.recordAccountEvent(transaction, actor, {
@@ -1425,6 +1603,7 @@ export class AccountsService {
           destinationExpectedVersion: input.destinationExpectedVersion,
           siteId: actor.siteId,
         });
+        this.assertNotAwaitingScheduledDispatch(source, destination);
         await this.assertNoActiveAdjustments(transaction, [source.id, destination.id]);
         if (source.is_primary && source.account_group_id !== destination.account_group_id) {
           const siblings = await transaction.query(
@@ -1704,6 +1883,12 @@ export class AccountsService {
     });
   }
 
+  private assertNotAwaitingScheduledDispatch(...accounts: AccountRow[]): void {
+    if (accounts.some((account) => account.scheduled_for && !account.schedule_dispatched_at)) {
+      throw new ConflictException("Quita la programación antes de dividir, unir o transferir un pedido programado");
+    }
+  }
+
   private async lockAccount(
     transaction: DatabaseSession,
     accountId: string,
@@ -1714,6 +1899,9 @@ export class AccountsService {
       `SELECT
          id, site_id, table_id, NULL::text AS table_name, service_type,
          status, reference, guest_count, version, opened_at,
+         customer_name, scheduled_for, schedule_dispatched_at, schedule_last_error,
+         scheduled_by_user_id, scheduled_on_terminal_id,
+         opened_by_user_id, opened_on_terminal_id,
          responsible_user_id, NULL::text AS responsible_user_name,
          account_group_id, is_primary
        FROM service_accounts

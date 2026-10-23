@@ -133,6 +133,8 @@ export class PosApi {
     tableId?: string;
     guestCount: number;
     reference?: string;
+    customerName?: string | null;
+    scheduledFor?: string | null;
   }): Promise<{ id: string }> {
     return this.request("/v1/accounts", {
       method: "POST",
@@ -291,6 +293,21 @@ export class PosApi {
         body: input,
       },
     );
+  }
+
+  updateAccountDetails(
+    accountId: string,
+    input: {
+      expectedVersion: number;
+      customerName?: string | null;
+      scheduledFor?: string | null;
+    },
+  ): Promise<{ accountVersion: number }> {
+    return this.request(`/v1/accounts/${accountId}/details`, {
+      method: "PATCH",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
   }
 
   updateAccountContext(

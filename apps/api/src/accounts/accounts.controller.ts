@@ -26,6 +26,7 @@ import { SendRoundDto } from "./dto/send-round.dto.js";
 import { SplitAccountDto } from "./dto/split-account.dto.js";
 import { TransferAccountItemsDto } from "./dto/transfer-account-items.dto.js";
 import { UpdateAccountContextDto } from "./dto/update-account-context.dto.js";
+import { UpdateAccountDetailsDto } from "./dto/update-account-details.dto.js";
 import { UpdateOrderItemDto } from "./dto/update-order-item.dto.js";
 import { VoidAccountAdjustmentDto } from "./dto/void-account-adjustment.dto.js";
 
@@ -225,7 +226,7 @@ export class AccountsController {
 
   @Post(":accountId/cancellations")
   @ApiHeader({ name: "idempotency-key", required: true })
-  @RequirePermissions("service.account.manage")
+  @RequirePermissions("service.account.open")
   async cancelAccount(
     @Param("accountId", ParseUUIDPipe) accountId: string,
     @Headers("idempotency-key") key: string | undefined,
@@ -251,6 +252,24 @@ export class AccountsController {
     @Req() request: RequestWithAuth,
   ) {
     const result = await this.accounts.updateContext(
+      accountId,
+      input,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
+  @Patch(":accountId/details")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.item.edit")
+  async updateDetails(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Body() input: UpdateAccountDetailsDto,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.accounts.updateDetails(
       accountId,
       input,
       requireIdempotencyKey(key),

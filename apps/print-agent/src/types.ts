@@ -1,6 +1,6 @@
 export interface ProductionPayload {
   ticketId: string;
-  kind: "addition" | "cancellation" | "reprint";
+  kind: "addition" | "cancellation" | "reprint" | "note_update";
   center: { id: string; code: string; name: string };
   service: {
     accountId: string;
@@ -15,6 +15,7 @@ export interface ProductionPayload {
     modifiers: string[];
   }>;
   cancellationReason?: string;
+  previousNote?: string | null;
   reprint?: { reason: string; requestedBy: string };
 }
 

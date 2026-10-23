@@ -127,6 +127,22 @@ describe("PosApi", () => {
     });
   });
 
+  it("guarda cliente y programación y permite borrarlos explícitamente", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ accountVersion: 4 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new PosApi("/api", "access-token", () => "details-key");
+    await api.updateAccountDetails("account-1", { expectedVersion: 3, customerName: null, scheduledFor: null });
+    expect(fetchMock).toHaveBeenCalledWith("/api/v1/accounts/account-1/details", {
+      method: "PATCH",
+      headers: {
+        authorization: "Bearer access-token",
+        "content-type": "application/json",
+        "idempotency-key": "details-key",
+      },
+      body: JSON.stringify({ expectedVersion: 3, customerName: null, scheduledFor: null }),
+    });
+  });
+
   it("envía el cobro completo con una sola clave idempotente", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
       id: "receipt-1",

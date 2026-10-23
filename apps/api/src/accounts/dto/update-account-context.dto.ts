@@ -1,12 +1,8 @@
-import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsInt, IsOptional, IsUUID, Min } from "class-validator";
+import { ApiPropertyOptional } from "@nestjs/swagger";
+import { IsOptional, IsUUID } from "class-validator";
+import { UpdateAccountDetailsDto } from "./update-account-details.dto.js";
 
-export class UpdateAccountContextDto {
-  @ApiProperty({ minimum: 0 })
-  @IsInt()
-  @Min(0)
-  expectedVersion!: number;
-
+export class UpdateAccountContextDto extends UpdateAccountDetailsDto {
   @ApiPropertyOptional()
   @IsOptional()
   @IsUUID()

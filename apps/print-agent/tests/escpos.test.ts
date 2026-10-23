@@ -36,6 +36,32 @@ describe("adaptador ESC/POS", () => {
     expect([...bytes.slice(-3)]).toEqual([0x1d, 0x56, 0x00]);
   });
 
+  it("identifica una actualización de nota sin pedir preparar otra comanda", () => {
+    const ticket = renderPlainTicket({
+      ...payload,
+      kind: "note_update",
+      previousNote: "Muy dorado",
+      items: [{ ...payload.items[0]!, note: "Con todo, salsa aparte" }],
+    });
+    expect(ticket).toContain("ACTUALIZACION DE NOTA");
+    expect(ticket).toContain("NO PREPARAR DE NUEVO");
+    expect(ticket).toContain("Mesa 4 · Ronda 2");
+    expect(ticket).toContain("3 x Taco al pastor");
+    expect(ticket).toContain("NOTA: Con todo, salsa aparte");
+    expect(ticket).not.toContain("NUEVA COMANDA");
+    expect(ticket).not.toContain("Muy dorado");
+  });
+
+  it("avisa cuando se eliminó la nota de una comanda enviada", () => {
+    const ticket = renderPlainTicket({
+      ...payload,
+      kind: "note_update",
+      items: [{ ...payload.items[0]!, note: null }],
+    });
+    expect(ticket).toContain("NO PREPARAR DE NUEVO");
+    expect(ticket).toContain("NOTA: Sin observaciones");
+  });
+
   it("genera tickets de venta y marca sus reimpresiones", () => {
     const receipt: ReceiptPayload = {
       kind: "receipt_reprint",

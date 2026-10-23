@@ -17,12 +17,16 @@ export interface OrderItem {
   name: string;
   priceInCents: number;
   quantity: number;
+  note: string | null;
   preparationState: ItemPreparationState;
 }
 
 export interface Order {
   id: string;
   label: string;
+  customerName: string | null;
+  scheduledFor: string | null;
+  scheduleDispatchedAt: string | null;
   version: number;
   items: OrderItem[];
 }
@@ -30,7 +34,11 @@ export interface Order {
 export type OrderAction =
   | { type: "product-added"; product: Product }
   | { type: "quantity-changed"; itemId: string; delta: 1 | -1 }
-  | { type: "pending-items-sent" };
+  | { type: "item-note-updated"; itemId: string; note: string }
+  | { type: "label-changed"; label: string }
+  | { type: "details-updated"; customerName: string; scheduledFor: string | null }
+  | { type: "pending-items-sent"; sentAt?: string }
+  | { type: "scheduled-items-sent"; sentAt: string };
 
 const createItemId = (productId: string): string =>
   `${productId}-${createUuid()}`;
@@ -38,6 +46,9 @@ const createItemId = (productId: string): string =>
 export const createOrder = (label = "Mesa 4"): Order => ({
   id: createUuid(),
   label,
+  customerName: null,
+  scheduledFor: null,
+  scheduleDispatchedAt: null,
   version: 0,
   items: [],
 });
@@ -48,6 +59,7 @@ export const orderReducer = (order: Order, action: OrderAction): Order => {
       const matchingPendingItem = order.items.find(
         (item) =>
           item.productId === action.product.id &&
+          !item.note &&
           item.preparationState === "pending",
       );
 
@@ -65,6 +77,7 @@ export const orderReducer = (order: Order, action: OrderAction): Order => {
               name: action.product.name,
               priceInCents: action.product.priceInCents,
               quantity: 1,
+              note: null,
               preparationState: "pending" as const,
             },
           ];
@@ -92,13 +105,52 @@ export const orderReducer = (order: Order, action: OrderAction): Order => {
       return { ...order, items, version: order.version + 1 };
     }
 
+    case "item-note-updated": {
+      const target = order.items.find((item) => item.id === action.itemId);
+      if (!target || target.preparationState === "cancelled") return order;
+      const note = action.note.trim().slice(0, 120) || null;
+      if (target.note === note) return order;
+      return {
+        ...order,
+        items: order.items.map((item) => item.id === target.id ? { ...item, note } : item),
+        version: order.version + 1,
+      };
+    }
+
+    case "label-changed": {
+      if (!action.label.trim() || action.label === order.label) return order;
+      return { ...order, label: action.label.trim(), version: order.version + 1 };
+    }
+
+    case "details-updated": {
+      if (action.scheduledFor !== null && !Number.isFinite(Date.parse(action.scheduledFor))) return order;
+      const customerName = action.customerName.trim().slice(0, 80) || null;
+      const scheduledFor = action.scheduledFor === null ? null : new Date(action.scheduledFor).toISOString();
+      if (customerName === order.customerName && scheduledFor === order.scheduledFor) return order;
+      return {
+        ...order,
+        customerName,
+        scheduledFor,
+        scheduleDispatchedAt: scheduledFor === order.scheduledFor ? order.scheduleDispatchedAt : null,
+        version: order.version + 1,
+      };
+    }
+
+    case "scheduled-items-sent":
     case "pending-items-sent": {
+      const sentAt = action.sentAt ?? new Date().toISOString();
+      const sentTime = Date.parse(sentAt);
+      if (!Number.isFinite(sentTime)) return order;
+      const awaitingSchedule = Boolean(order.scheduledFor && !order.scheduleDispatchedAt);
+      if (action.type === "scheduled-items-sent" && !awaitingSchedule) return order;
+      if (awaitingSchedule && Date.parse(order.scheduledFor!) > sentTime) return order;
       if (!order.items.some((item) => item.preparationState === "pending")) {
         return order;
       }
 
       return {
         ...order,
+        scheduleDispatchedAt: awaitingSchedule ? new Date(sentAt).toISOString() : order.scheduleDispatchedAt,
         items: order.items.map((item) =>
           item.preparationState === "pending"
             ? { ...item, preparationState: "sent" as const }

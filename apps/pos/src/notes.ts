@@ -1,4 +1,4 @@
-export const QUICK_NOTES = ["Sin lácteos", "Sin salsa", "Sin cebolla"] as const;
+export const QUICK_NOTES = ["Con todo", "Sin lácteos", "Sin salsa", "Sin cebolla"] as const;
 
 const NOTE_SEPARATOR = ", ";
 

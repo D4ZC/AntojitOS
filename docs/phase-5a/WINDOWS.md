@@ -37,7 +37,11 @@ La configuración inicial y los códigos se generan una vez en `.env.pilot`. **L
 
 En una instalación existente se conservan la configuración y los datos. Si se pierde `.env.pilot`, es necesario recuperarlo de un respaldo. La carga inicial del restaurante se realiza únicamente cuando la base todavía no contiene una sucursal. Una instalación completada reutiliza sus imágenes y no vuelve a crear la máquina ni a inicializar la base.
 
-La máquina de Podman se llama `antojitos-pilot` y usa almacenamiento **rootless**. Mantener ese nombre y conexión: otra máquina o el modo rootful tienen almacenamiento distinto.
+El instalador comprueba las máquinas de Podman antes de crear una. Reutiliza `antojitos-pilot` si existe; en otro caso elige la única máquina WSL encendida, la predeterminada o la única disponible, en ese orden. Si hay varias sin una selección clara, muestra sus nombres para que se establezca una como predeterminada en Podman. Si no hay ninguna compatible, crea `antojitos-pilot`.
+
+La máquina seleccionada queda guardada en `var/windows/installation.json`. Si ya está encendida se usa directamente; si está detenida se inicia. Los siguientes arranques y actualizaciones conservan esa selección, aunque cambie la máquina predeterminada de Podman. Se utiliza almacenamiento **rootless**: mantener el nombre y la conexión guardados, porque otra máquina o el modo rootful tienen almacenamiento distinto.
+
+Una máquina creada manualmente no implica que exista una instalación anterior de AntojitOS. El instalador permite reutilizarla si está vacía o contiene otros proyectos. Si detecta volúmenes o contenedores de AntojitOS y falta `.env.pilot`, solicita recuperar esa configuración antes de generar credenciales nuevas. La instalación conserva un `.env.pilot` que ya exista.
 
 ### Usar parámetros desde PowerShell
 
@@ -96,7 +100,7 @@ Para iniciar manualmente, elegir **2** o ejecutar:
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\final_script.ps1 -Action Start
 ```
 
-El arranque diario utiliza las imágenes y los datos instalados. Espera a Podman, inicia los servicios y comprueba la aplicación; no descarga actualizaciones, construye imágenes ni carga otra vez los datos iniciales.
+El arranque diario utiliza las imágenes y los datos instalados. Espera a Podman y comprueba también la conexión del proveedor Compose al canal local de la máquina seleccionada antes de iniciar los servicios. Si esa conexión falla, intenta recuperar `win-sshproxy.exe` una vez y vuelve a comprobar la API. El intento conserva la máquina y los contenedores en ejecución; no descarga actualizaciones, construye imágenes ni carga otra vez los datos iniciales.
 
 ### Acceso desde la PC y las terminales
 
@@ -114,6 +118,28 @@ El piloto usa HTTP en la red local. El instalador no configura HTTPS; las funcio
 Antes de abrir el turno, comprobar acceso desde otra terminal y realizar una comanda e impresión de prueba. La impresión actual corresponde a ESC/POS por red; una impresora únicamente USB requiere integración adicional.
 
 ## 3. Actualizar desde GitHub
+
+Si `/?mode=kds` conserva la URL pero muestra «Selecciona una mesa», la pantalla
+servida no corresponde a la entrada KDS actual. Reparar el arranque con la opción
+1 conserva las imágenes instaladas: no despliega una nueva pantalla.
+
+Para una instalación existente, el paquete **AntojitOS-cocina-corregida.zip**
+incluye la pantalla compilada y `ABRIR-COMANDAS.cmd`. Extraerlo en Windows y
+ejecutar ese archivo como administrador, con la cuenta propietaria y AntojitOS
+iniciado. `04-reparar-cocina.ps1` utiliza el nginx instalado para preparar una
+imagen local sin descargar dependencias, conserva la imagen anterior y recrea
+únicamente `web`. Comprueba por HTTP el HTML y los archivos publicados; si falla,
+intenta restaurar la imagen anterior. PostgreSQL, API e impresión siguen activos.
+La imagen actualizada conserva la etiqueta que usa Compose en el próximo inicio.
+El registro queda en `var/windows/logs/repair-kds.log` y la referencia de respaldo
+en `var/windows/web-repair.json`. Una futura actualización normal desde GitHub
+vuelve a construir la aplicación desde el código de la versión elegida.
+
+Al finalizar abre `/recuperar-cocina.html?v=...`, que retira el service worker
+anterior y solamente las cachés `antojit-os-shell-*`, conservando `localStorage`,
+PIN y terminales registradas. Después entra en `/kds/`; también sigue admitiéndose
+`/?mode=kds`. La nueva caché consulta primero el servidor al abrir una pantalla y
+reserva el HTML guardado para cuando no hay conexión.
 
 Programar una ventana de mantenimiento. Cerrar las cuentas abiertas y el turno de caja, salir de todas las terminales y comprobar que nadie utilizará la aplicación durante la actualización. Antes de una actualización normal, la aplicación debe estar iniciada y responder correctamente.
 
@@ -167,6 +193,30 @@ La opción **5**, o `final_script.ps1 -Action Logs`, abre la carpeta de sesiones
 Para solicitar ayuda, compartir la carpeta de registros de esa ejecución y describir la opción elegida. Los secretos del proyecto se ocultan en las salidas registradas; mantener fuera del reporte `.env.pilot`, claves privadas y respaldos de la base. No leer el contenido de `.env.pilot` dentro de una consola cuya salida esté siendo grabada.
 
 La ayuda del lanzador se puede consultar con `Get-Help .\final_script.ps1 -Full`.
+
+### El instalador rechaza la URL oficial de Podman
+
+Si la instalación se detiene con `La URL del instalador de containers/podman no pertenece a su publicacion oficial`, se está usando una versión anterior del instalador. El repositorio oficial de Podman cambió a `podman-container-tools/podman`; GitHub redirige la consulta anterior, pero los archivos de la publicación ya usan la dirección nueva.
+
+Extraer el proyecto completo actualizado en una carpeta de preparación nueva, abrir su `final_script.cmd` y elegir **1** con la misma cuenta de Windows. Se comprueban y reutilizan las dependencias ya instaladas, y se conserva la configuración y la base existentes. No es necesario volver a formatear ni borrar WSL, Podman o los datos. Las validaciones de repositorio, hash y firma del instalador permanecen activas.
+
+### Podman inicia, pero Compose no encuentra su canal
+
+Los mensajes `win-sshproxy.exe failed to start` y `failed to connect to the docker API at npipe:...` indican que falló el puente de Windows que utiliza Compose. `podman info` puede responder correctamente en ese estado. El código de salida 0 del auxiliar tampoco demuestra que haya levantado el canal.
+
+Si aparece `Podman no informa el canal local que necesita Compose` aunque la salida de `machine inspect` sí contiene `ConnectionInfo.PodmanPipe.Path`, el lanzador anterior está interpretando incorrectamente los arreglos JSON de Windows PowerShell 5.1. La versión corregida normaliza esa respuesta antes de leer la máquina, y aplica el mismo manejo a las listas de máquinas, volúmenes y contenedores. Las pruebas incluyen la respuesta de Podman 6.1.4 de la ejecución que falló y reproducen la semántica de PowerShell 5.1.
+
+Para aplicar la corrección a una instalación existente:
+
+1. Extraer el proyecto completo actualizado en una carpeta de preparación nueva en la PC Windows.
+2. Abrir su `final_script.cmd`, con la cuenta propietaria de la instalación, y elegir **1. Instalar / completar configuración**. Esto actualiza el lanzador protegido registrado en `ProgramData`, conservando la instalación y los datos existentes.
+3. Comprobar el acceso a `http://localhost:8080` (o al puerto configurado). Reiniciar Windows y comprobar también el inicio automático y el acceso desde una terminal.
+
+El arranque corregido consulta `ls --format json` directamente al proveedor Compose, sin necesitar `.env.pilot` para esa comprobación. Fija `DOCKER_HOST` al canal que informa la máquina seleccionada y descarta los contextos y opciones TLS heredados de otra instalación de Docker. Si el puente anterior ya terminó, ejecuta el auxiliar de Podman con un único reenvío al socket rootless de esa máquina, sin solicitar el canal global `docker_engine` ni el socket Unix de Windows. Si el auxiliar sigue activo, espera a su API sin duplicarlo.
+
+Si la conexión continúa fallando, el inicio termina con el error de Compose y el detalle de recuperación. Conservar los archivos `win-sshproxy-*.stderr.log` de esa ejecución y consultar el Visor de eventos, **Registros de Windows > Aplicación**, origen **.NET Runtime**, en la hora del fallo. No recrear la máquina ni cambiarla a rootful como reparación: esos cambios seleccionan otro almacenamiento.
+
+La recuperación del auxiliar utiliza el protocolo de argumentos de Podman 6.1.4 y requiere comprobarse en la PC Windows afectada; las pruebas automatizadas con mocks verifican la lógica y no sustituyen el reinicio real.
 
 ## Recuperación y respaldos
 

@@ -24,7 +24,7 @@ Todos los pozoles piden la **carne** (una o varias): pierna, lengua, pata, oreja
 |---|---|---|---:|
 | Tacos dorados | Taco dorado enrollado | Papa, frijol, rajas, requesón o picadillo | $10 |
 | Tacos dorados | Taco dorado de carne, combinado o chicharrón | Carne, combinado o chicharrón | $15 |
-| Flautas | Flauta | Carne, papa, frijol, requesón, rajas o picadillo | $25 |
+| Flautas | Flauta | Carne, papa, frijol, requesón, rajas o picadillo | $35 |
 | Enchiladas | Orden de 4 enchiladas | Queso, queso con cebolla o carne | $70 |
 | Enchiladas | Enchilada por pieza | Queso, queso con cebolla o carne | $20 |
 | Tostadas | Tostada | Pierna, pata, carne de cabeza, lengua, cuerito, trompa u oreja en vinagre | $35 |

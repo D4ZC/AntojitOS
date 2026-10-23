@@ -142,6 +142,10 @@ export interface ServiceAccount {
   status: string;
   reference: string | null;
   guestCount: number;
+  customerName?: string | null;
+  scheduledFor?: string | null;
+  scheduleDispatchedAt?: string | null;
+  scheduleError?: string | null;
   version: number;
   accountGroupId: string;
   isPrimary: boolean;
@@ -181,6 +185,10 @@ export interface OpenCounterAccount {
   itemCount: number;
   totalInCents: number;
   openedAt: string;
+  customerName?: string | null;
+  scheduledFor?: string | null;
+  scheduleDispatchedAt?: string | null;
+  scheduleError?: string | null;
 }
 
 export interface AccountManagementOptions {

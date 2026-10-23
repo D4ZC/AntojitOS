@@ -1,0 +1,33 @@
+[
+     {
+          "ConfigDir": {
+               "Path": "C:\\Users\\AntojitOS\\.config\\containers\\podman\\machine\\wsl"
+          },
+          "ConnectionInfo": {
+               "PodmanSocket": {
+                    "Path": "C:\\Users\\ANTOJI~1\\AppData\\Local\\Temp\\podman\\antojitos-pilot-api.sock"
+               },
+               "PodmanPipe": {
+                    "Path": "\\\\.\\pipe\\podman-antojitos-pilot"
+               }
+          },
+          "Created": "2026-10-21T19:38:11.6806504-06:00",
+          "LastUp": "0001-01-01T00:00:00Z",
+          "Name": "antojitos-pilot",
+          "Resources": {
+               "CPUs": 2,
+               "DiskSize": 100,
+               "Memory": 2048,
+               "USBs": []
+          },
+          "SSHConfig": {
+               "IdentityPath": "C:\\Users\\AntojitOS\\.local\\share\\containers\\podman\\machine\\machine",
+               "Port": 65094,
+               "RemoteUsername": "user"
+          },
+          "State": "running",
+          "UserModeNetworking": false,
+          "Rootful": false,
+          "Rosetta": false
+     }
+]

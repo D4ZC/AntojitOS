@@ -17,6 +17,5 @@ export class UpdateOrderItemDto {
   @IsOptional()
   @IsString()
   @MaxLength(200)
-  note?: string;
+  note?: string | null;
 }
-

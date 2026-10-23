@@ -335,7 +335,7 @@ function Save-AntojitDownload {
 
 function Get-AntojitLatestRelease {
     param([string]$Repository)
-    $allowed = @('git-for-windows/git', 'containers/podman', 'docker/compose')
+    $allowed = @('git-for-windows/git', 'podman-container-tools/podman', 'docker/compose')
     if ($allowed -notcontains $Repository) { throw 'Repositorio de dependencias no autorizado.' }
     Write-AntojitDiagnostic -Message "[RELEASE] Consultando la ultima version oficial de $Repository."
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repository/releases/latest" -Headers @{
@@ -492,12 +492,12 @@ function Install-AntojitDependencies {
         $podmanPath = Get-AntojitPodman
         if (-not $podmanPath) {
             Write-AntojitDiagnostic -Message '[DEPENDENCY] Instalando Podman CLI x64...'
-            $release = Get-AntojitLatestRelease -Repository 'containers/podman'
+            $release = Get-AntojitLatestRelease -Repository 'podman-container-tools/podman'
             if (@($release.assets | Where-Object { $_.name -eq 'podman-installer-windows-amd64.msi' }).Count -gt 0) {
-                $asset = Get-AntojitReleaseAsset -Release $release -NamePattern '^podman-installer-windows-amd64\.msi$' -Repository 'containers/podman'
+                $asset = Get-AntojitReleaseAsset -Release $release -NamePattern '^podman-installer-windows-amd64\.msi$' -Repository 'podman-container-tools/podman'
             }
             else {
-                $asset = Get-AntojitReleaseAsset -Release $release -NamePattern '^podman-[0-9](?!.*(?:arm|aarch)).*-setup\.exe$' -Repository 'containers/podman'
+                $asset = Get-AntojitReleaseAsset -Release $release -NamePattern '^podman-[0-9](?!.*(?:arm|aarch)).*-setup\.exe$' -Repository 'podman-container-tools/podman'
             }
             $podmanInstaller = Join-Path $temporaryDirectory $asset.name
             Save-AntojitDownload -Uri $asset.browser_download_url -Destination $podmanInstaller
@@ -557,4 +557,4 @@ function Install-AntojitDependencies {
 }
 
 Export-ModuleMember -Function Assert-AntojitWindows, Assert-AntojitAdministrator, Update-AntojitPath, Get-AntojitNode, Get-AntojitGit, Get-AntojitPodman, Install-AntojitDependencies,
-    ConvertTo-AntojitLogText, Write-AntojitDiagnostic
+    ConvertTo-AntojitLogText, Write-AntojitDiagnostic, Invoke-AntojitNative, ConvertTo-AntojitNativeArgument

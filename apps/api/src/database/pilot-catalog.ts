@@ -79,7 +79,7 @@ export const pilotCatalog = {
     product(738, category.pozole, "CALDO-EXTRA-LITRO", "Caldo extra un litro", "Caldo litro", "🥣", "clay", 9, 3000),
     product(726, category.tacosDorados, "TACO-DORADO-ENROLLADO", "Taco dorado enrollado", "Enrollado", "🌮", "amber", 1, 1000),
     product(727, category.tacosDorados, "TACO-DORADO-CARNE", "Taco dorado de carne, combinado o chicharrón", "Carne o combinado", "🌮", "coral", 2, 1500),
-    product(728, category.flautas, "FLAUTA", "Flauta", "Flauta", "🌯", "coral", 1, 2500),
+    product(728, category.flautas, "FLAUTA", "Flauta", "Flauta", "🌯", "coral", 1, 3500),
     product(729, category.enchiladas, "ENCHILADAS-ORDEN-4", "Enchiladas, orden de 4", "Orden de 4", "🫔", "clay", 1, 7000),
     product(730, category.enchiladas, "ENCHILADA-PIEZA", "Enchilada por pieza", "Por pieza", "🫔", "peach", 2, 2000),
     product(731, category.tostadas, "TOSTADA", "Tostada", "Tostada", "🥙", "sun", 1, 3500),

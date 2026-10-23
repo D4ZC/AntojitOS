@@ -1,6 +1,7 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
 import {
   IsIn,
+  IsDateString,
   IsInt,
   IsOptional,
   IsString,
@@ -32,5 +33,15 @@ export class OpenAccountDto {
   @IsString()
   @MaxLength(80)
   reference?: string;
-}
 
+  @ApiPropertyOptional({ maxLength: 80, nullable: true })
+  @IsOptional()
+  @IsString()
+  @MaxLength(80)
+  customerName?: string | null;
+
+  @ApiPropertyOptional({ format: "date-time", nullable: true })
+  @IsOptional()
+  @IsDateString({ strict: true })
+  scheduledFor?: string | null;
+}

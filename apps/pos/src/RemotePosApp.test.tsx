@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "./api/pos-api";
 import { RemotePosApp, type RemoteApi } from "./RemotePosApp";
 import type {
   CashShiftContext,
@@ -87,6 +88,10 @@ const emptyAccount: ServiceAccount = {
   serviceType: "table",
   status: "open",
   reference: null,
+  customerName: null,
+  scheduledFor: null,
+  scheduleDispatchedAt: null,
+  scheduleError: null,
   guestCount: 2,
   version: 0,
   accountGroupId: "group-1",
@@ -287,6 +292,7 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   }),
   transferAccountItems: vi.fn().mockResolvedValue({ sourceVersion: 2, destinationVersion: 2 }),
   mergeAccount: vi.fn().mockResolvedValue({ destinationAccountId: "account-2", destinationVersion: 2 }),
+  updateAccountDetails: vi.fn().mockResolvedValue({ accountVersion: 1 }),
   cancelAccount: vi.fn().mockResolvedValue({ accountVersion: 1, status: "cancelled" }),
   addItem: vi.fn().mockResolvedValue({ accountVersion: 1 }),
   updateItem: vi.fn().mockResolvedValue({ accountVersion: 2 }),
@@ -310,7 +316,7 @@ const loginAndSelectTable = async (api: RemoteApi) => {
   fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
   fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
   fireEvent.click(await screen.findByRole("button", { name: "Mesa 1, libre" }));
-  await screen.findByRole("heading", { name: "Mesa 1" });
+  await screen.findByRole("button", { name: "Cambiar mesa" });
 };
 
 afterEach(() => {
@@ -383,6 +389,211 @@ describe("POS conectado", () => {
 
     expect(await screen.findByRole("heading", { name: "Venta rápida" })).toBeInTheDocument();
     expect(api.account).toHaveBeenCalledWith("quick-account-1");
+  });
+
+  it("permite agregar Con todo a una comanda ya enviada sin cambiar su cantidad", async () => {
+    storeTerminal();
+    const updated = { ...sentAccount, version: 3, items: sentAccount.items.map((item) => ({ ...item, note: "Con todo" })) };
+    const api = createApi({ account: vi.fn().mockResolvedValueOnce(sentAccount).mockResolvedValue(updated) });
+    await loginAndSelectTable(api);
+
+    expect(screen.getByRole("button", { name: "Agregar una unidad de Quesadilla" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "+ Nota" }));
+    fireEvent.click(screen.getByRole("button", { name: "Con todo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Guardar nota" }));
+
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("account-1", "item-1", {
+      quantity: 1, expectedVersion: 2, note: "Con todo",
+    }));
+    expect(await screen.findByText("Nota: Con todo")).toBeInTheDocument();
+    expect(api.sendRound).not.toHaveBeenCalled();
+  });
+
+  it("descarta automáticamente una venta rápida vacía al salir", async () => {
+    storeTerminal();
+    const quick = { ...emptyAccount, tableId: null, tableName: null, serviceType: "quick" as const };
+    const api = createApi({ account: vi.fn().mockResolvedValue(quick) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cambiar mesa" }));
+
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0, reason: "Servicio sin productos descartado al salir",
+    }));
+    expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
+  });
+
+  it("descarta la venta rápida vacía antes de cerrar sesión", async () => {
+    storeTerminal();
+    const quick = { ...emptyAccount, tableId: null, tableName: null, serviceType: "quick" as const };
+    const api = createApi({ account: vi.fn().mockResolvedValue(quick) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar sesión de Administrador" }));
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0, reason: "Servicio sin productos descartado al cerrar sesión",
+    }));
+    expect(await screen.findByRole("heading", { name: "Acceso al punto de venta" })).toBeInTheDocument();
+  });
+
+  it("permite al mesero cancelar su venta rápida sin permiso de gestión", async () => {
+    storeTerminal();
+    const quick = { ...pendingAccount, tableId: null, tableName: null, serviceType: "quick" as const };
+    const api = createApi({
+      account: vi.fn().mockResolvedValue(quick),
+      login: vi.fn().mockResolvedValue({ ...session, user: { ...session.user, permissions: ["service.account.open", "service.item.edit"] } }),
+    });
+    await loginAndSelectTable(api);
+    expect(screen.queryByRole("button", { name: "Gestionar cuenta" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar pedido" }));
+    fireEvent.change(screen.getByLabelText("Motivo de cancelación"), { target: { value: "Captura por error" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cancelación" }));
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalled());
+    expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
+  });
+
+  it("muestra el motivo de un conflicto que no cambió la versión de la cuenta", async () => {
+    storeTerminal();
+    const message = "Quita la programación antes de mover artículos";
+    const api = createApi({
+      account: vi.fn().mockResolvedValue(pendingAccount),
+      updateAccountDetails: vi.fn().mockRejectedValue(new ApiError(409, message, {})),
+    });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cliente y programación" }));
+    fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(screen.getAllByText(message).length).toBeGreaterThan(0));
+  });
+
+  it("permite cancelar una venta rápida pendiente desde la salida", async () => {
+    storeTerminal();
+    const quick = { ...pendingAccount, tableId: null, tableName: null, serviceType: "quick" as const };
+    const api = createApi({ account: vi.fn().mockResolvedValue(quick) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cambiar mesa" }));
+    expect(await screen.findByRole("heading", { name: "Salir de Venta rápida" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar pedido y salir" }));
+
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 1, reason: "Pedido sin enviar descartado al salir",
+    }));
+    expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
+  });
+
+  it("permite cancelar un servicio recuperado desde su botón directo", async () => {
+    storeTerminal();
+    const quick = { ...emptyAccount, tableId: null, tableName: null, serviceType: "quick" as const };
+    const api = createApi({ account: vi.fn().mockResolvedValue(quick) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar pedido" }));
+    fireEvent.change(screen.getByLabelText("Motivo de cancelación"), { target: { value: "Abierto por error" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cancelación" }));
+
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0, reason: "Abierto por error",
+    }));
+  });
+
+  it("guarda cliente opcional y programa el envío automático en la hora local elegida", async () => {
+    storeTerminal();
+    const date = "2099-10-24T18:30";
+    const scheduled = { ...pendingAccount, customerName: "Doña Lupita", scheduledFor: new Date(date).toISOString(), scheduleDispatchedAt: null };
+    const api = createApi({ account: vi.fn().mockResolvedValueOnce(pendingAccount).mockResolvedValue(scheduled) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cliente y programación" }));
+    fireEvent.change(screen.getByLabelText("Nombre del cliente (opcional)"), { target: { value: " Doña Lupita " } });
+    fireEvent.click(screen.getByRole("checkbox", { name: "Programar envío a cocina" }));
+    fireEvent.change(screen.getByLabelText("Fecha y hora de envío a cocina"), { target: { value: date } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
+
+    await waitFor(() => expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 1, customerName: "Doña Lupita", scheduledFor: new Date(date).toISOString(),
+    }));
+    expect(await screen.findByText("Doña Lupita")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Envío automático programado/ })).toBeDisabled();
+    expect(api.sendRound).not.toHaveBeenCalled();
+  });
+
+  it("inicia un pedido programado, agrega productos y lo conserva al salir", async () => {
+    storeTerminal();
+    const date = "2099-10-24T18:30";
+    const scheduledFor = new Date(date).toISOString();
+    const takeaway: ServiceAccount = {
+      ...emptyAccount, serviceType: "takeaway", tableId: null, tableName: null,
+    };
+    const scheduledEmpty: ServiceAccount = {
+      ...takeaway, version: 1, customerName: "Doña Lupita", scheduledFor, scheduleDispatchedAt: null,
+    };
+    const scheduledOrder: ServiceAccount = {
+      ...pendingAccount, ...scheduledEmpty, version: 2,
+      items: pendingAccount.items, totals: pendingAccount.totals, totalInCents: pendingAccount.totalInCents,
+    };
+    const api = createApi({
+      account: vi.fn().mockResolvedValueOnce(takeaway).mockResolvedValueOnce(scheduledEmpty)
+        .mockResolvedValue(scheduledOrder),
+      updateAccountDetails: vi.fn().mockResolvedValue({ accountVersion: 1 }),
+      addItem: vi.fn().mockResolvedValue({ accountVersion: 2 }),
+      openCounterAccounts: vi.fn().mockResolvedValueOnce([]).mockResolvedValue([{
+        id: scheduledOrder.id, label: "Para llevar", serviceType: "takeaway", sequence: 1,
+        version: scheduledOrder.version, responsible: scheduledOrder.responsible,
+        itemCount: 1, totalInCents: scheduledOrder.totalInCents,
+        openedAt: "2030-01-01T10:00:00.000Z", customerName: "Doña Lupita", scheduledFor,
+        scheduleDispatchedAt: null,
+      }]),
+    });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Programar pedido/ }));
+
+    await screen.findByRole("dialog", { name: "Cliente y programación" });
+    expect(screen.getByRole("checkbox", { name: "Programar envío a cocina" })).toBeChecked();
+    fireEvent.change(screen.getByLabelText("Nombre del cliente (opcional)"), { target: { value: "Doña Lupita" } });
+    fireEvent.change(screen.getByLabelText("Fecha y hora de envío a cocina"), { target: { value: date } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Cliente y programación" })).not.toBeInTheDocument());
+    expect(api.openAccount).toHaveBeenCalledWith({ serviceType: "takeaway", guestCount: 2 });
+    expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0, customerName: "Doña Lupita", scheduledFor,
+    });
+    expect(screen.getByRole("button", { name: /Envío automático programado/ })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: /Agregar Quesadilla/ }));
+    await screen.findByText("Quesadilla", { selector: ".order-item strong" });
+    expect(api.addItem).toHaveBeenCalledWith("account-1", {
+      productId: "product-1", quantity: 1, expectedVersion: 1, modifierIds: [],
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Cambiar mesa" }));
+
+    await screen.findByRole("button", { name: "Abrir Para llevar 1" });
+    expect(screen.getByText("Cliente: Doña Lupita")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "Salir de Para llevar" })).not.toBeInTheDocument();
+    expect(api.cancelAccount).not.toHaveBeenCalled();
+    expect(api.sendRound).not.toHaveBeenCalled();
+  });
+
+  it("permite quitar la programación y volver al envío manual", async () => {
+    storeTerminal();
+    const scheduled = { ...pendingAccount, scheduledFor: "2099-10-24T18:30:00.000Z", scheduleDispatchedAt: null };
+    const api = createApi({ account: vi.fn().mockResolvedValueOnce(scheduled).mockResolvedValue(pendingAccount) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cliente y programación" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Programar envío a cocina" }));
+    fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 1, customerName: null, scheduledFor: null,
+    }));
+    expect(await screen.findByRole("button", { name: /Enviar comanda/ })).toBeEnabled();
+  });
+
+  it("rechaza programar un pedido en una fecha pasada", async () => {
+    storeTerminal();
+    const api = createApi();
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cliente y programación" }));
+    fireEvent.click(screen.getByRole("checkbox", { name: "Programar envío a cocina" }));
+    fireEvent.change(screen.getByLabelText("Fecha y hora de envío a cocina"), { target: { value: "2000-01-01T12:00" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
+    expect(screen.getAllByText("Elige una fecha y hora futuras para enviar a cocina").length).toBeGreaterThan(0);
+    expect(api.updateAccountDetails).not.toHaveBeenCalled();
   });
 
   it("agrega un producto y envía la ronda al servidor", async () => {

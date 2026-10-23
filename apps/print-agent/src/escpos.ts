@@ -22,9 +22,12 @@ const renderProduction = (payload: ProductionPayload): string => {
     ? "*** REIMPRESION ***"
     : payload.kind === "cancellation"
       ? "*** CANCELACION ***"
-      : "*** NUEVA COMANDA ***";
+      : payload.kind === "note_update"
+        ? "*** ACTUALIZACION DE NOTA ***"
+        : "*** NUEVA COMANDA ***";
   const lines = [
     title,
+    ...(payload.kind === "note_update" ? ["NO PREPARAR DE NUEVO"] : []),
     payload.center.name.toUpperCase(),
     `${payload.service.label} · Ronda ${payload.roundSequence}`,
     "--------------------------------",
@@ -33,6 +36,7 @@ const renderProduction = (payload: ProductionPayload): string => {
     lines.push(`${item.quantity} x ${item.productName}`);
     for (const modifier of item.modifiers) lines.push(`  > ${modifier}`);
     if (item.note) lines.push(`  NOTA: ${item.note}`);
+    else if (payload.kind === "note_update") lines.push("  NOTA: Sin observaciones");
   }
   lines.push("--------------------------------");
   if (payload.cancellationReason) lines.push(`Motivo: ${payload.cancellationReason}`);
