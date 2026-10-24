@@ -11,6 +11,7 @@ Conservar **la carpeta completa del proyecto**: `final_script.cmd`, `final_scrip
 | **3. Configurar / reparar el arranque automático** | Selecciona inicio al encender o al entrar al escritorio y registra la tarea. |
 | **4. Actualizar aplicación** | Desde un proyecto extraído, aplica esa carpeta a la instalación existente después de confirmar el mantenimiento. También conserva el flujo Git explícito. |
 | **5. Abrir la carpeta de logs** | Abre la carpeta que contiene los registros de las ejecuciones. |
+| **6. Recuperar la actualización pendiente** | Verifica y completa la versión guardada en la PC usando los auxiliares Windows del ZIP actual. Después se puede instalar el ZIP nuevo. |
 | **0. Salir** | Termina sin ejecutar una operación. |
 
 ## Preparar la computadora
@@ -253,6 +254,17 @@ La configuración de la instalación está en `var/windows/installation.json`. S
 Si falla después de iniciar la nueva API, algunas migraciones pueden haberse aplicado. El proceso intenta detener los servicios de escritura y conserva los respaldos. Revisar error y estado de la base antes de reintentar la actualización con mantenimiento confirmado. Ese intento prepara solamente PostgreSQL para respaldar el estado actual antes de iniciar otra vez la API.
 
 Para una actualización desde carpeta, el estado pendiente identifica las fuentes congeladas y su hash. Reintentar esa misma versión: después de un posible cambio del esquema se rechaza sustituirla por fuentes distintas. Conservar la carpeta `var/windows/update-source/` y el respaldo del código anterior. Para un despliegue Git pendiente se conserva el commit objetivo; si GitHub ya apunta a otro, se debe resolver el intento anterior antes de adoptar esa nueva versión o cambiar al procedimiento ZIP.
+
+### Recuperar una actualización ZIP si ya no se conserva el ZIP anterior
+
+Si aparece **«Hay un despliegue pendiente que pudo aplicar migraciones»** al usar un ZIP más reciente, completar primero la versión pendiente. No es necesario conservar el ZIP original si su copia guardada sigue íntegra en la instalación.
+
+1. Extraer el proyecto completo más reciente en una carpeta nueva fuera de la instalación. Cerrar caja y salir de todas las terminales.
+2. Abrir **`RECUPERAR-ACTUALIZACION.cmd`** en esa carpeta, o abrir su `final_script.cmd` y elegir **6**.
+3. Escribir **ACTUALIZAR** para confirmar el mantenimiento. El proceso verifica la ruta y el hash de la copia pendiente, prepara una copia protegida con los auxiliares Windows actuales y completa esa misma versión con el flujo normal de construcción y respaldo.
+4. Cuando la consola indique **«Recuperacion completada»**, abrir **`ACTUALIZAR-APP.cmd`** en la carpeta nueva para instalar ahora el ZIP más reciente.
+
+La recuperación conserva los archivos originales de la aplicación pendiente, incluido su `Containerfile`; los cambios de la aplicación del ZIP nuevo se instalan en el segundo paso. Por ello la recuperación aún puede necesitar la conexión a npm y los tiempos de descarga de esa versión anterior. No modifica la copia congelada original, no borra el estado para saltar la comprobación y no restaura la base automáticamente. Si la copia falta o fue alterada, o el intento pendiente procede de Git, se detiene y conserva el estado y los respaldos para revisar los registros.
 
 Después de iniciar las nuevas migraciones no se restaura la base ni se retrocede el código automáticamente. Si el fallo no se resuelve, seguir [CONTINGENCIA.md](CONTINGENCIA.md) y planear una recuperación coherente de código, configuración y base.
 

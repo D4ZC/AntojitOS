@@ -88,6 +88,28 @@ Describe 'Update maintenance and data preservation' {
         Should -Invoke Enter-AntojitOperation -Times 0 -Exactly
     }
 
+    It 'passes explicit pending recovery and its helper ZIP to the folder updater without consulting Git' {
+        Mock Invoke-AntojitFolderUpdate { }
+        $source = Join-Path $TestDrive 'new ZIP recovery helpers'
+        & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root -SourcePath $source -ResumePending -ConfirmMaintenance -Managed
+        Should -Invoke Invoke-AntojitFolderUpdate -Times 1 -Exactly -ParameterFilter {
+            $SourcePath -eq $source -and $InstallPath -eq $global:AntojitUpdateTestInstallation.Root -and $ResumePending -and $ConfirmMaintenance
+        }
+        Should -Invoke Get-AntojitGit -Times 0 -Exactly
+        Should -Invoke Enter-AntojitOperation -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCommand -Times 0 -Exactly
+    }
+
+    It 'rejects pending recovery without its helper ZIP before entering the Git update path' {
+        Mock Invoke-AntojitFolderUpdate { }
+        { & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root -ResumePending -ConfirmMaintenance -Managed } |
+            Should -Throw '*RECUPERAR-ACTUALIZACION.cmd*'
+        Should -Invoke Invoke-AntojitFolderUpdate -Times 0 -Exactly
+        Should -Invoke Get-AntojitGit -Times 0 -Exactly
+        Should -Invoke Enter-AntojitOperation -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCommand -Times 0 -Exactly
+    }
+
     It 'rejects Git updates for an installation maintained from a ZIP folder' {
         $global:AntojitUpdateTestInstallation.SourceMode = 'folder'
         & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root -ConfirmMaintenance 2>$null

@@ -18,6 +18,9 @@ Carpeta de la instalacion. Si se omite, usa la ubicacion registrada por el insta
 Carpeta nueva con el ZIP completo extraido. Actualiza la instalacion registrada sin Git.
 .PARAMETER PrinterQueue
 Nombre exacto de la cola de Windows para activar impresion USB; si se omite conserva la configuracion.
+.PARAMETER ResumePending
+Recupera la version pendiente desde su copia congelada y verificada. SourcePath
+aporta solamente los auxiliares Windows actuales, sin sustituir la aplicacion pendiente.
 .PARAMETER RepositoryUrl
 URL HTTPS de github.com/propietario/repositorio o SSH git@github.com:propietario/repositorio.git.
 No admite credenciales, tokens, parametros ni fragmentos en la URL.
@@ -40,6 +43,7 @@ param(
     [string]$RepositoryUrl,
     [string]$Branch,
     [switch]$ConfirmMaintenance,
+    [switch]$ResumePending,
     [switch]$Managed
 )
 
@@ -120,10 +124,11 @@ try {
     Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Printing.psm1') -Force -DisableNameChecking
     Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Update.psm1') -Force -DisableNameChecking
     if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
-        Invoke-AntojitFolderUpdate -SourcePath $SourcePath -InstallPath $InstallPath -ConfirmMaintenance:$ConfirmMaintenance -PrinterQueue $PrinterQueue
+        Invoke-AntojitFolderUpdate -SourcePath $SourcePath -InstallPath $InstallPath -ConfirmMaintenance:$ConfirmMaintenance -PrinterQueue $PrinterQueue -ResumePending:$ResumePending
         if ($Managed) { return }
         exit 0
     }
+    if ($ResumePending) { throw 'La recuperacion requiere el proyecto ZIP de preparacion. Abre RECUPERAR-ACTUALIZACION.cmd desde esa carpeta.' }
     Assert-AntojitWindows
     Assert-AntojitAdministrator
     $resolvedInstallPath = Resolve-AntojitInstallPath -InstallPath $InstallPath

@@ -25,6 +25,7 @@ param(
     [ValidateRange(1, 65535)][int]$PrinterPort,
     [ValidateSet('Startup', 'Logon')][string]$AutoStartMode,
     [switch]$ConfirmMaintenance,
+    [switch]$ResumePending,
     [switch]$ForceRegister,
     [switch]$Unattended,
     [switch]$NoPause,
@@ -107,6 +108,7 @@ function Read-AntojitAction {
     Write-Host '  3. Configurar / reparar el arranque automatico'
     Write-Host '  4. Actualizar la app (desde esta carpeta ZIP o GitHub)'
     Write-Host '  5. Abrir la carpeta de logs'
+    Write-Host '  6. Recuperar la actualizacion pendiente (usa la copia guardada)'
     Write-Host '  0. Salir'
     while ($true) {
         switch (Read-Host 'Elige una opcion') {
@@ -115,6 +117,7 @@ function Read-AntojitAction {
             '3' { return 'AutoStart' }
             '4' { return 'Update' }
             '5' { return 'Logs' }
+            '6' { return 'ResumeUpdate' }
             '0' { return 'Exit' }
             default { Write-Host 'Opcion invalida. Escribe un numero de la lista.' }
         }
@@ -156,6 +159,14 @@ function Set-AntojitUpdateOptions {
     $resolved = Resolve-AntojitInstallPath -InstallPath $requestedInstallPath
     $installation = Get-AntojitInstallation -InstallPath $resolved
     $Options.InstallPath = [string]$installation.Root
+    $resume = $Options.ContainsKey('ResumePending') -and $Options.ResumePending
+    if ($resume) {
+        if (($Options.ContainsKey('RepositoryUrl') -and $Options.RepositoryUrl) -or ($Options.ContainsKey('Branch') -and $Options.Branch)) {
+            throw 'La recuperacion desde la copia guardada requiere el proyecto ZIP de preparacion, sin RepositoryUrl ni Branch.'
+        }
+        $pendingPath = Join-Path $installation.StateDirectory 'update-pending.json'
+        if (-not (Test-Path -LiteralPath $pendingPath -PathType Leaf)) { throw 'No hay una actualizacion pendiente que recuperar.' }
+    }
     if (-not $Options.ContainsKey('SourcePath') -or [string]::IsNullOrWhiteSpace([string]$Options.SourcePath)) {
         $source = [IO.Path]::GetFullPath($script:AntojitEntryRoot).TrimEnd('\', '/')
         $destination = [IO.Path]::GetFullPath($installation.Root).TrimEnd('\', '/')
@@ -169,15 +180,22 @@ function Set-AntojitUpdateOptions {
         }
     }
     if ($Options.ContainsKey('SourcePath') -and -not [string]::IsNullOrWhiteSpace([string]$Options.SourcePath)) {
-        Write-Host "Carpeta nueva que se instalara: $($Options.SourcePath)"
+        if ($resume) {
+            Write-Host "Auxiliares para recuperar la version pendiente: $($Options.SourcePath)"
+            Write-Host 'Se verificara y completara la version pendiente guardada en esta PC. Despues podras instalar el ZIP nuevo.' -ForegroundColor Yellow
+        } else {
+            Write-Host "Carpeta nueva que se instalara: $($Options.SourcePath)"
+        }
         Write-Host "Instalacion que se actualizara: $($installation.Root)"
+    } elseif ($resume) {
+        throw 'Abre RECUPERAR-ACTUALIZACION.cmd desde una carpeta ZIP nueva y completa, fuera de la instalacion.'
     } elseif ($installation.PSObject.Properties['SourceMode'] -and $installation.SourceMode -eq 'folder') {
         throw 'Esta instalacion se actualiza desde un ZIP nuevo. Descarga y extrae el proyecto completo fuera de la instalacion, y abre ACTUALIZAR-APP.cmd en esa carpeta.'
     } elseif (-not $Options.ContainsKey('RepositoryUrl')) {
         $url = Read-Host 'URL de GitHub (Enter para usar la ya guardada)'
         if ($url.Trim()) { $Options.RepositoryUrl = $url.Trim() }
     }
-    if (-not $Options.ContainsKey('PrinterQueue') -or [string]::IsNullOrWhiteSpace([string]$Options.PrinterQueue)) {
+    if (-not $resume -and (-not $Options.ContainsKey('PrinterQueue') -or [string]::IsNullOrWhiteSpace([string]$Options.PrinterQueue))) {
         $printing = Get-AntojitPrintConfiguration -Installation $installation
         if ($printing.Mode -ne 'native') {
             $queue = Read-AntojitUsbPrinterQueue
@@ -186,9 +204,12 @@ function Set-AntojitUpdateOptions {
     }
     if (-not $Options.ConfirmMaintenance) {
         Write-Host 'Cierra caja y sal de todas las terminales antes de actualizar. Se respaldaran los datos.'
-        $answer = Read-Host 'Escribe ACTUALIZAR para instalar esta version; Enter cancela'
+        $prompt = if ($resume) { 'Escribe ACTUALIZAR para completar la version pendiente; Enter cancela' }
+            else { 'Escribe ACTUALIZAR para instalar esta version; Enter cancela' }
+        $answer = Read-Host $prompt
         if ($answer -cne 'ACTUALIZAR') {
-            Write-Host 'Actualizacion cancelada. La aplicacion continua con su version actual.'
+            if ($resume) { Write-Host 'Recuperacion cancelada. Se conservan la actualizacion pendiente y sus respaldos.' }
+            else { Write-Host 'Actualizacion cancelada.' }
             return $false
         }
         $Options.ConfirmMaintenance = $true
@@ -213,7 +234,7 @@ function Invoke-AntojitWorkflow {
         }
         'Update' {
             $file = '03-actualizar.ps1'
-            $names += @('RepositoryUrl', 'Branch', 'SourcePath', 'PrinterQueue', 'ConfirmMaintenance')
+            $names += @('RepositoryUrl', 'Branch', 'SourcePath', 'PrinterQueue', 'ConfirmMaintenance', 'ResumePending')
         }
         default { throw "Operacion no valida: $Action" }
     }
@@ -287,7 +308,7 @@ function Open-AntojitLogDirectory {
 
 function Invoke-AntojitFinalMain {
     param([hashtable]$Options)
-    foreach ($name in @('Action', 'Unattended', 'NoPause', 'ConfirmMaintenance')) {
+    foreach ($name in @('Action', 'Unattended', 'NoPause', 'ConfirmMaintenance', 'ResumePending')) {
         if (-not $Options.ContainsKey($name)) {
             $Options[$name] = if ($name -eq 'Action') { 'Menu' } else { $false }
         }
@@ -319,6 +340,9 @@ function Invoke-AntojitFinalMain {
         if ($Options.Unattended -and $Options.Action -ne 'Start') {
             throw '-Unattended solo admite -Action Start. No se instalara ni actualizara sin una sesion interactiva.'
         }
+        if ($Options.ResumePending -and $Options.Action -notin @('Menu', 'Update')) {
+            throw '-ResumePending solo admite -Action Update.'
+        }
         if ($Options.ContainsKey('RequestedOwnerSid') -and $Options.RequestedOwnerSid -ne [Security.Principal.WindowsIdentity]::GetCurrent().User.Value) {
             throw 'La elevacion cambio de cuenta. Usa una cuenta administradora e inicia con esa misma cuenta para conservar el acceso a WSL y los datos.'
         }
@@ -340,6 +364,8 @@ function Invoke-AntojitFinalMain {
             $selected = $Options.Action
             $fromMenu = $selected -eq 'Menu'
             if ($fromMenu) { $selected = Read-AntojitAction }
+            if ($selected -eq 'ResumeUpdate') { $selected = 'Update'; $Options.ResumePending = $true }
+            if ($Options.ResumePending -and $selected -ne 'Update') { throw 'Selecciona Actualizar para recuperar el intento pendiente.' }
             if ($selected -eq 'Logs') {
                 Open-AntojitLogDirectory -Directory $directory
             } elseif ($selected -ne 'Exit') {
@@ -352,7 +378,11 @@ function Invoke-AntojitFinalMain {
                 Write-AntojitLog "Operacion: $selected"
                 if ($runWorkflow) {
                     Invoke-AntojitWorkflow -Action $selected -Options $Options
-                    Write-AntojitLog 'Operacion completada correctamente.'
+                    if ($selected -eq 'Update' -and $Options.ResumePending) {
+                        Write-AntojitLog 'Recuperacion completada. Ahora abre ACTUALIZAR-APP.cmd del ZIP nuevo para instalar esa version.'
+                    } else {
+                        Write-AntojitLog 'Operacion completada correctamente.'
+                    }
                 }
             }
         }

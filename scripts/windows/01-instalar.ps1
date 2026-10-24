@@ -169,8 +169,12 @@ try {
         # not represent those executable bits, which otherwise dirties the copy.
         Invoke-AntojitCommand -FilePath $tools.GitPath -Arguments @('-C', $root, 'config', 'core.filemode', 'false')
     }
-    foreach ($required in @('compose.pilot.yaml', 'Containerfile', '.env.pilot.example', 'scripts\pilot.mjs', 'scripts\check-npm-registry.mjs')) {
+    foreach ($required in @('compose.pilot.yaml', 'Containerfile', '.env.pilot.example', 'scripts\pilot.mjs')) {
         if (-not (Test-Path -LiteralPath (Join-Path $root $required))) { throw "El proyecto esta incompleto: falta $required." }
+    }
+    if ([IO.File]::ReadAllText((Join-Path $root 'Containerfile')).Contains('scripts/check-npm-registry.mjs') -and
+        -not (Test-Path -LiteralPath (Join-Path $root 'scripts/check-npm-registry.mjs') -PathType Leaf)) {
+        throw 'El proyecto esta incompleto: falta scripts/check-npm-registry.mjs que necesita su Containerfile.'
     }
     Protect-AntojitPath -Path $root -OwnerSid $owner.User.Value
     [pscustomobject]@{ Root = $root; OwnerSid = $owner.User.Value } | ConvertTo-Json | Set-Content -LiteralPath $locationFile -Encoding UTF8

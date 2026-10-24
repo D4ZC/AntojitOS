@@ -9,6 +9,12 @@ function Test-AntojitUpdateExcluded {
     return ($Name -match '(?i)\.(log|zip|dump)$')
 }
 
+function Test-AntojitUpdateBootstrapPath {
+    param([Parameter(Mandatory)][string]$Path)
+    return ($Path.StartsWith('scripts/windows/', [StringComparison]::OrdinalIgnoreCase) -or
+        $Path -in @('final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'RECUPERAR-ACTUALIZACION.cmd'))
+}
+
 function Get-AntojitUpdateManifest {
     [CmdletBinding()]
     param([Parameter(Mandatory)][string]$Root)
@@ -36,8 +42,7 @@ function Get-AntojitUpdateManifest {
         [void]$lines.Append($file.Length).Append(':').Append($file).Append(':').Append($hash).Append("`n")
         # Only these Windows launchers can change during recovery of the same
         # application version. Keep build inputs, migrations and pilot.mjs here.
-        if (-not $file.StartsWith('scripts/windows/', [StringComparison]::OrdinalIgnoreCase) -and
-            $file -notin @('final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd')) {
+        if (-not (Test-AntojitUpdateBootstrapPath -Path $file)) {
             [void]$applicationLines.Append($file.Length).Append(':').Append($file).Append(':').Append($hash).Append("`n")
         }
     }
@@ -57,15 +62,89 @@ function Get-AntojitUpdateManifest {
 function Assert-AntojitUpdateProject {
     param([Parameter(Mandatory)][string]$Root)
     foreach ($file in @('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'Containerfile', 'compose.pilot.yaml', '.dockerignore',
-        'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'scripts/pilot.mjs', 'scripts/check-npm-registry.mjs',
+        'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'scripts/pilot.mjs',
         'scripts/windows/01-instalar.ps1', 'scripts/windows/02-iniciar.ps1', 'scripts/windows/03-actualizar.ps1',
         'scripts/windows/AntojitOS.Dependencies.psm1', 'scripts/windows/AntojitOS.Update.psm1',
         'scripts/windows/AntojitOS.Windows.psm1', 'scripts/windows/AntojitOS.Printing.psm1',
         'apps/api/package.json', 'apps/pos/package.json', 'apps/print-agent/package.json', 'packages/domain/package.json')) {
         if (-not (Test-Path -LiteralPath (Join-Path $Root $file) -PathType Leaf)) { throw "ZIP incompleto: falta $file. Extrae el proyecto completo antes de actualizar." }
     }
+    # Frozen releases predating the network check remain valid recovery sources.
+    if ([IO.File]::ReadAllText((Join-Path $Root 'Containerfile')).Contains('scripts/check-npm-registry.mjs') -and
+        -not (Test-Path -LiteralPath (Join-Path $Root 'scripts/check-npm-registry.mjs') -PathType Leaf)) {
+        throw 'ZIP incompleto: falta scripts/check-npm-registry.mjs. Extrae el proyecto completo antes de actualizar.'
+    }
     if (@(Get-ChildItem -LiteralPath (Join-Path $Root 'apps/api/migrations') -Filter '*.sql' -File -ErrorAction SilentlyContinue).Count -eq 0) {
         throw 'ZIP incompleto: faltan las migraciones de la API.'
+    }
+}
+
+function Get-AntojitPendingSnapshot {
+    param([Parameter(Mandatory)]$Installation, [Parameter(Mandatory)]$Pending, [Parameter(Mandatory)][string]$PendingPath)
+    if (-not $Pending.PSObject.Properties['SourceKind'] -or $Pending.SourceKind -ne 'folder') {
+        throw "Hay un despliegue pendiente de otro origen que pudo aplicar migraciones. Reintenta su mismo origen; no se sustituira por otro ZIP. Conserva $PendingPath y sus respaldos."
+    }
+    if (-not $Pending.PSObject.Properties['Version'] -or $Pending.Version -ne 1 -or
+        -not $Pending.PSObject.Properties['SourceHash'] -or $Pending.SourceHash -cnotmatch '^[a-f0-9]{64}$') {
+        throw "El estado pendiente no identifica una version de carpeta valida. Conserva $PendingPath y sus respaldos."
+    }
+    $expected = [IO.Path]::GetFullPath((Join-Path $Installation.StateDirectory ('update-source/' + $Pending.SourceHash + '/source')))
+    if (-not $Pending.PSObject.Properties['SnapshotPath'] -or -not $Pending.SnapshotPath -or
+        -not [IO.Path]::GetFullPath([string]$Pending.SnapshotPath).Equals($expected, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "La ruta de la copia congelada pendiente no corresponde a su version. Conserva $PendingPath y sus respaldos."
+    }
+    # Check the containing directories too: a junction above /source must not
+    # redirect a protected recovery snapshot elsewhere.
+    $current = $expected
+    $state = [IO.Path]::GetFullPath($Installation.StateDirectory).TrimEnd('\', '/')
+    while ($current.Length -ge $state.Length) {
+        if (-not (Test-Path -LiteralPath $current -PathType Container)) { throw "No existe la copia congelada pendiente: $expected" }
+        if (((Get-Item -LiteralPath $current -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "La copia congelada pendiente no puede contener enlaces: $current"
+        }
+        if ($current.TrimEnd('\', '/').Equals($state, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $current = Split-Path -Parent $current
+    }
+    $manifest = Get-AntojitUpdateManifest -Root $expected
+    if ($manifest.Hash -cne $Pending.SourceHash) { throw "La copia congelada cambio. No se usara: $expected" }
+    Assert-AntojitUpdateProject -Root $expected
+    return [pscustomobject]@{ Path = $expected; Manifest = $manifest }
+}
+
+function New-AntojitPendingRecoverySource {
+    param([Parameter(Mandatory)]$Installation, [Parameter(Mandatory)]$Snapshot,
+        [Parameter(Mandatory)][string]$BootstrapRoot, [Parameter(Mandatory)]$BootstrapManifest)
+    $directory = Join-Path ([IO.Path]::GetTempPath()) ('AntojitOS-recovery-' + [guid]::NewGuid().ToString('N'))
+    Assert-AntojitDisjointUpdatePaths -SourcePath $directory -DestinationPath $Installation.Root
+    try {
+        New-Item -ItemType Directory -Path $directory -ErrorAction Stop | Out-Null
+        Protect-AntojitPath -Path $directory -OwnerSid $Installation.OwnerSid
+        $source = Join-Path $directory 'source'
+        $copied = New-AntojitUpdateSnapshot -SourcePath $Snapshot.Path -DestinationPath $source
+        if ($copied.Hash -cne $Snapshot.Manifest.Hash) { throw 'La copia congelada cambio antes de preparar su recuperacion.' }
+        foreach ($relative in $copied.Files) {
+            if (Test-AntojitUpdateBootstrapPath -Path $relative) { Remove-Item -LiteralPath (Join-Path $source $relative) -Force }
+        }
+        foreach ($relative in $BootstrapManifest.Files) {
+            if (-not (Test-AntojitUpdateBootstrapPath -Path $relative)) { continue }
+            $target = Join-Path $source $relative
+            New-Item -ItemType Directory -Path (Split-Path -Parent $target) -Force | Out-Null
+            Copy-Item -LiteralPath (Join-Path $BootstrapRoot $relative) -Destination $target -Force
+        }
+        if ((Get-AntojitUpdateManifest -Root $BootstrapRoot).Hash -cne $BootstrapManifest.Hash) {
+            throw 'El ZIP de auxiliares cambio durante la recuperacion. Conserva el origen sin modificar y vuelve a intentar.'
+        }
+        $manifest = Get-AntojitUpdateManifest -Root $source
+        if ($manifest.ApplicationHash -cne $Snapshot.Manifest.ApplicationHash) {
+            throw 'La recuperacion no conserva exactamente la aplicacion pendiente. Se cancelo sin sustituirla.'
+        }
+        Assert-AntojitUpdateProject -Root $source
+        return [pscustomobject]@{ Directory = $directory; SourcePath = $source; Manifest = $manifest }
+    } catch {
+        $recoveryError = $_
+        try { if (Test-Path -LiteralPath $directory) { Remove-Item -LiteralPath $directory -Recurse -Force } }
+        catch { Write-Warning "No se pudo retirar la carpeta temporal de recuperacion: $directory" }
+        throw $recoveryError
     }
 }
 
@@ -110,7 +189,7 @@ function Sync-AntojitUpdateSource {
     # Delete only application-owned source, never a whole tree containing local state.
     $rootFiles = @('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'Containerfile',
         'compose.pilot.yaml', '.dockerignore', '.gitignore', '.env.example', '.env.pilot.example',
-        'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'README.md')
+        'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'RECUPERAR-ACTUALIZACION.cmd', 'README.md')
     foreach ($relative in $destination.Files) {
         if (-not $known.ContainsKey($relative) -and ($relative -match '^(apps|packages|scripts|deploy|docs|\.github)/' -or $relative -in $rootFiles)) {
             Remove-Item -LiteralPath (Join-Path $DestinationPath $relative) -Force
@@ -190,7 +269,8 @@ function Update-AntojitLauncherBundle {
 
 function Invoke-AntojitFolderUpdate {
     [CmdletBinding()]
-    param([Parameter(Mandatory)][string]$SourcePath, [string]$InstallPath, [switch]$ConfirmMaintenance, [string]$PrinterQueue)
+    param([Parameter(Mandatory)][string]$SourcePath, [string]$InstallPath, [switch]$ConfirmMaintenance, [string]$PrinterQueue,
+        [switch]$ResumePending)
     $operation = $null
     $installation = $null
     $pending = $null
@@ -203,6 +283,7 @@ function Invoke-AntojitFolderUpdate {
     $configurationChanged = $false
     $hadPrintEnvironment = $false
     $bootstrapRetry = $null
+    $recoverySource = $null
     try {
         Assert-AntojitWindows
         Assert-AntojitAdministrator
@@ -215,37 +296,46 @@ function Invoke-AntojitFolderUpdate {
         Start-AntojitLog -Path (Join-Path $installation.StateDirectory ('logs/update-folder-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.log'))
         $manifest = Get-AntojitUpdateManifest -Root $source
         $pendingPath = Join-Path $installation.StateDirectory 'update-pending.json'
+        $previousSnapshot = $null
         if (Test-Path -LiteralPath $pendingPath) {
             $pending = Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json
             $mayHaveMigrated = ($pending.MayHaveMigrated -eq $true)
-            $isFolder = ($pending.PSObject.Properties['SourceKind'] -and $pending.SourceKind -eq 'folder')
-            if ($mayHaveMigrated) {
+            if ($ResumePending -or $mayHaveMigrated) {
+                $previousSnapshot = Get-AntojitPendingSnapshot -Installation $installation -Pending $pending -PendingPath $pendingPath
+            }
+            if ($mayHaveMigrated -and -not $ResumePending) {
                 $pendingMessage = "Hay un despliegue pendiente que pudo aplicar migraciones. Reintenta su mismo origen; no se sustituira por otro ZIP. Conserva $pendingPath y sus respaldos."
-                if (-not $isFolder -or -not $pending.PSObject.Properties['SourceHash'] -or
-                    $pending.SourceHash -cnotmatch '^[a-f0-9]{64}$') { throw $pendingMessage }
                 if ($pending.SourceHash -cne $manifest.Hash) {
                     # A bootstrap fix must prove that every application path and
                     # byte still matches the immutable source that may have run.
-                    $previousSnapshot = [IO.Path]::GetFullPath((Join-Path $installation.StateDirectory ('update-source/' + $pending.SourceHash + '/source')))
-                    if (-not $pending.PSObject.Properties['SnapshotPath'] -or -not $pending.SnapshotPath -or
-                        -not [IO.Path]::GetFullPath([string]$pending.SnapshotPath).Equals($previousSnapshot, [StringComparison]::OrdinalIgnoreCase)) {
-                        throw "La ruta de la copia congelada pendiente no corresponde a su version. Conserva $pendingPath y sus respaldos."
-                    }
-                    $previousManifest = Get-AntojitUpdateManifest -Root $previousSnapshot
-                    if ($previousManifest.Hash -cne $pending.SourceHash) {
-                        throw "La copia congelada cambio. No se usara: $previousSnapshot"
-                    }
-                    if ($previousManifest.ApplicationHash -cne $manifest.ApplicationHash) { throw $pendingMessage }
+                    if ($previousSnapshot.Manifest.ApplicationHash -cne $manifest.ApplicationHash) { throw $pendingMessage }
                     $bootstrapRetry = [pscustomobject]@{
                         PreviousSourceHash = $pending.SourceHash
                         SourceHash = $manifest.Hash
-                        ValidatedSnapshotPath = $previousSnapshot
+                        ValidatedSnapshotPath = $previousSnapshot.Path
                         AcceptedAt = [DateTime]::UtcNow.ToString('o')
                     }
                 }
             }
+        } elseif ($ResumePending) {
+            throw 'No hay una actualizacion pendiente que recuperar. Abre ACTUALIZAR-APP.cmd para instalar la version nueva.'
         }
         if (-not $ConfirmMaintenance) { throw 'Cierra caja y sal de todas las terminales. Confirma ACTUALIZAR en el lanzador o usa -ConfirmMaintenance para continuar.' }
+        if ($ResumePending) {
+            $requestedHash = $manifest.Hash
+            $recoverySource = New-AntojitPendingRecoverySource -Installation $installation -Snapshot $previousSnapshot -BootstrapRoot $source -BootstrapManifest $manifest
+            $source = $recoverySource.SourcePath
+            $manifest = $recoverySource.Manifest
+            $bootstrapRetry = [pscustomobject]@{
+                PreviousSourceHash = $pending.SourceHash
+                SourceHash = $manifest.Hash
+                ValidatedSnapshotPath = $previousSnapshot.Path
+                RequestedSourceHash = $requestedHash
+                Recovery = $true
+                AcceptedAt = [DateTime]::UtcNow.ToString('o')
+            }
+            Write-AntojitLog 'Recuperando exclusivamente la aplicacion pendiente con los auxiliares Windows nuevos; los cambios de aplicacion del ZIP nuevo se instalaran despues.'
+        }
         $maintenanceStarted = $true
         $stamp = (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '-' + [guid]::NewGuid().ToString('N').Substring(0, 8)
         $backupDirectory = Join-Path $installation.Root ('backups/windows-update-' + $stamp)
@@ -293,7 +383,11 @@ function Invoke-AntojitFolderUpdate {
         }
         Save-AntojitUpdateRecord -Path $pendingPath -Record $pending
         if ($null -ne $bootstrapRetry) {
-            Write-AntojitLog 'Se verifico que el nuevo ZIP solo corrige scripts Windows y conserva la misma aplicacion pendiente y sus respaldos.'
+            if ($ResumePending) {
+                Write-AntojitLog 'Se verifico que la copia de recuperacion conserva la aplicacion pendiente, incorpora solo los auxiliares Windows nuevos y mantiene sus respaldos.'
+            } else {
+                Write-AntojitLog 'Se verifico que el nuevo ZIP solo corrige scripts Windows y conserva la misma aplicacion pendiente y sus respaldos.'
+            }
         }
         $printBefore = Get-AntojitPrintConfiguration -Installation $installation
         if ($printBefore.Mode -eq 'native' -and (Test-Path -LiteralPath $printBefore.ActivePath -PathType Leaf)) {
@@ -360,6 +454,9 @@ function Invoke-AntojitFolderUpdate {
         Save-AntojitUpdateRecord -Path (Join-Path $backupDirectory 'update.json') -Record $pending
         Remove-Item -LiteralPath $pendingPath -Force
         Write-AntojitLog "Actualizacion desde ZIP completada. Respaldo verificado: $backupDirectory"
+        if ($ResumePending) {
+            Write-AntojitLog 'Se completo la version pendiente. Vuelve a ejecutar ACTUALIZAR-APP.cmd desde el ZIP nuevo para instalar sus cambios.'
+        }
     } catch {
         $updateError = $_
         if ($configurationChanged -and -not $mayHaveMigrated) {
@@ -392,7 +489,13 @@ function Invoke-AntojitFolderUpdate {
         }
         if ($backupDirectory) { Write-Warning "Material de recuperacion conservado en: $backupDirectory" }
         throw $updateError
-    } finally { if ($null -ne $operation) { $operation.Dispose() } }
+    } finally {
+        if ($null -ne $recoverySource) {
+            try { if (Test-Path -LiteralPath $recoverySource.Directory) { Remove-Item -LiteralPath $recoverySource.Directory -Recurse -Force } }
+            catch { Write-Warning "No se pudo retirar la carpeta temporal de recuperacion: $($recoverySource.Directory)" }
+        }
+        if ($null -ne $operation) { $operation.Dispose() }
+    }
 }
 
 Export-ModuleMember -Function Get-AntojitUpdateManifest, New-AntojitUpdateSnapshot, Sync-AntojitUpdateSource,

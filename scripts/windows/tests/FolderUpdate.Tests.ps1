@@ -118,7 +118,7 @@ Describe 'Frozen folder update sources' {
         $before.ApplicationHash | Should -Match '^[a-f0-9]{64}$'
 
         foreach ($relative in @('scripts/windows/AntojitOS.Printing.psm1', 'scripts/windows/new-helper.psm1',
-            'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd')) {
+            'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'RECUPERAR-ACTUALIZACION.cmd')) {
             Write-FolderUpdateFile -Root $source -RelativePath $relative -Content '# corrected Windows bootstrap'
         }
         $bootstrapChanged = Get-AntojitUpdateManifest -Root $source
@@ -308,6 +308,9 @@ Describe 'Folder update maintenance and recovery' {
         $relative = $RelativePath
         $installedPath = Join-Path $fixture.Installation.Root $relative
         $before = [IO.File]::ReadAllText($installedPath)
+        if ($relative -eq 'scripts/check-npm-registry.mjs') {
+            Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'Containerfile' -Content 'COPY scripts/check-npm-registry.mjs scripts/check-npm-registry.mjs'
+        }
         Remove-Item -LiteralPath (Join-Path $fixture.Source $relative) -Force
 
         { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw "*$relative*"
@@ -316,6 +319,16 @@ Describe 'Folder update maintenance and recovery' {
         Should -Invoke Enter-AntojitOperation -ModuleName AntojitOS.Update -Times 0 -Exactly
         Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 0 -Exactly
         Should -Invoke Invoke-AntojitCompose -ModuleName AntojitOS.Update -Times 0 -Exactly
+    }
+
+    It 'accepts an older complete release whose Containerfile does not use the npm checker' {
+        $fixture = $global:AntojitFolderFixture
+        Remove-Item -LiteralPath (Join-Path $fixture.Source 'scripts/check-npm-registry.mjs') -Force
+
+        Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance
+
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 1 -Exactly
+        Test-Path -LiteralPath (Join-Path $fixture.Installation.StateDirectory 'update-pending.json') | Should -BeFalse
     }
 
     It 'leaves installed code and writers untouched when the staged build fails' {
@@ -443,6 +456,232 @@ Describe 'Folder update maintenance and recovery' {
         [IO.File]::ReadAllText($pendingPath) | Should -BeExactly $original
         Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 0 -Exactly
         Should -Invoke Invoke-AntojitCompose -ModuleName AntojitOS.Update -Times 0 -Exactly
+    }
+
+    It 'explicitly recovers the frozen application using only new Windows helpers and then stops' {
+        $fixture = $global:AntojitFolderFixture
+        Remove-Item -LiteralPath (Join-Path $fixture.Source 'scripts/check-npm-registry.mjs') -Force
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+        $previousText = [IO.File]::ReadAllText($pendingPath)
+        $previous = $previousText | ConvertFrom-Json
+        $previousManifest = Get-AntojitUpdateManifest -Root $previous.SnapshotPath
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'apps/api/src/main.ts' -Content 'newer application must wait'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'apps/api/migrations/9999_new.sql' -Content 'new migration must wait'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'Containerfile' -Content 'COPY scripts/check-npm-registry.mjs scripts/check-npm-registry.mjs'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'scripts/check-npm-registry.mjs' -Content '// latest network check must wait'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'scripts/pilot.mjs' -Content '// latest pilot must wait'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'scripts/windows/AntojitOS.Printing.psm1' -Content '# corrected shared log reader'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'RECUPERAR-ACTUALIZACION.cmd' -Content '@echo recovery'
+        $requested = Get-AntojitUpdateManifest -Root $fixture.Source
+        $fixture | Add-Member -MemberType NoteProperty -Name RecoveryDirectories -Value @()
+        Mock Protect-AntojitPath {
+            param($Path)
+            if ((Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*') { $global:AntojitFolderFixture.RecoveryDirectories += $Path }
+        } -ModuleName AntojitOS.Update
+        $fixture.Failure = ''
+
+        Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending
+
+        Test-Path -LiteralPath $pendingPath | Should -BeFalse
+        (Get-AntojitUpdateManifest -Root $previous.SnapshotPath).Hash | Should -BeExactly $previous.SourceHash
+        (Get-AntojitUpdateManifest -Root $fixture.Source).Hash | Should -BeExactly $requested.Hash
+        (Get-AntojitUpdateManifest -Root $fixture.Installation.Root).ApplicationHash | Should -BeExactly $previousManifest.ApplicationHash
+        Get-Content -LiteralPath (Join-Path $fixture.Installation.Root 'apps/api/src/main.ts') -Raw | Should -BeExactly 'export const version = 2;'
+        Get-Content -LiteralPath (Join-Path $fixture.Installation.Root 'scripts/windows/AntojitOS.Printing.psm1') -Raw | Should -BeExactly '# corrected shared log reader'
+        Test-Path -LiteralPath (Join-Path $fixture.Installation.Root 'apps/api/migrations/9999_new.sql') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $fixture.Installation.Root 'scripts/check-npm-registry.mjs') | Should -BeFalse
+        Test-Path -LiteralPath (Join-Path $fixture.Installation.Root 'RECUPERAR-ACTUALIZACION.cmd') | Should -BeTrue
+        $records = @(Get-ChildItem -LiteralPath (Join-Path $fixture.Installation.Root 'backups') -Filter 'update.json' -File -Recurse)
+        $records.Count | Should -Be 1
+        $completed = Get-Content -LiteralPath $records[0].FullName -Raw | ConvertFrom-Json
+        $completed.ApplicationHash | Should -BeExactly $previousManifest.ApplicationHash
+        $completed.FirstBackupDirectory | Should -BeExactly $previous.FirstBackupDirectory
+        $completed.VerifiedBackups | Should -Contain $previous.VerifiedBackups[0]
+        @($completed.VerifiedBackups).Count | Should -Be 2
+        @($completed.BootstrapFixRetries).Count | Should -Be 1
+        $completed.BootstrapFixRetries[0].PreviousSourceHash | Should -BeExactly $previous.SourceHash
+        $completed.BootstrapFixRetries[0].ValidatedSnapshotPath | Should -BeExactly $previous.SnapshotPath
+        $completed.BootstrapFixRetries[0].RequestedSourceHash | Should -BeExactly $requested.Hash
+        $completed.BootstrapFixRetries[0].Recovery | Should -BeTrue
+        [IO.File]::ReadAllText((Join-Path $completed.LatestBackupDirectory 'previous-pending.json')) | Should -BeExactly $previousText
+        $fixture.RecoveryDirectories.Count | Should -Be 1
+        foreach ($directory in $fixture.RecoveryDirectories) { Test-Path -LiteralPath $directory | Should -BeFalse }
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 2 -Exactly
+        Should -Invoke Get-AntojitGit -ModuleName AntojitOS.Update -Times 0 -Exactly
+        Should -Invoke Write-AntojitLog -ModuleName AntojitOS.Update -Times 1 -Exactly -ParameterFilter { $Message -like 'Se completo la version pendiente*ACTUALIZAR-APP.cmd*' }
+    }
+
+    It 'does not install the new ZIP when recovery was requested without a pending update' {
+        $fixture = $global:AntojitFolderFixture
+        $before = Get-AntojitUpdateManifest -Root $fixture.Installation.Root
+
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending } | Should -Throw '*No hay una actualizacion pendiente*'
+
+        (Get-AntojitUpdateManifest -Root $fixture.Installation.Root).Hash | Should -BeExactly $before.Hash
+        Test-Path -LiteralPath (Join-Path $fixture.Installation.Root 'backups') | Should -BeFalse
+        Should -Invoke Protect-AntojitPath -ModuleName AntojitOS.Update -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCompose -ModuleName AntojitOS.Update -Times 0 -Exactly
+    }
+
+    It 'requires maintenance before creating a recovery staging folder or altering pending state' {
+        $fixture = $global:AntojitFolderFixture
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+        $before = [IO.File]::ReadAllText($pendingPath)
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'apps/api/src/main.ts' -Content 'new version'
+
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ResumePending } | Should -Throw '*ConfirmMaintenance*'
+
+        [IO.File]::ReadAllText($pendingPath) | Should -BeExactly $before
+        Should -Invoke Protect-AntojitPath -ModuleName AntojitOS.Update -Times 0 -Exactly -ParameterFilter { (Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*' }
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 1 -Exactly
+        Should -Invoke Initialize-AntojitRuntime -ModuleName AntojitOS.Update -Times 1 -Exactly
+    }
+
+    It 'rejects an invalid pending recovery record before modifying state (<Problem>)' -ForEach @(
+        @{ Problem = 'Git'; Pattern = '*otro origen*' }
+        @{ Problem = 'Version'; Pattern = '*version de carpeta valida*' }
+        @{ Problem = 'Hash'; Pattern = '*version de carpeta valida*' }
+        @{ Problem = 'Path'; Pattern = '*ruta de la copia congelada*' }
+        @{ Problem = 'Tamper'; Pattern = '*copia congelada cambio*' }
+        @{ Problem = 'Missing'; Pattern = '*No existe la copia congelada*' }
+    ) {
+        $fixture = $global:AntojitFolderFixture
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+        $pending = Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json
+        switch ($Problem) {
+            'Git' { $pending.SourceKind = 'git' }
+            'Version' { $pending.Version = 99 }
+            'Hash' { $pending.SourceHash = '../not-a-hash' }
+            'Path' { $pending.SnapshotPath = $fixture.Source }
+            'Tamper' { Write-FolderUpdateFile -Root $pending.SnapshotPath -RelativePath 'apps/api/src/main.ts' -Content 'tampered application' }
+            'Missing' { Remove-Item -LiteralPath $pending.SnapshotPath -Recurse -Force }
+        }
+        [IO.File]::WriteAllText($pendingPath, ($pending | ConvertTo-Json -Depth 10))
+        $before = [IO.File]::ReadAllText($pendingPath)
+        $backupsBefore = @(Get-ChildItem -LiteralPath (Join-Path $fixture.Installation.Root 'backups') -Directory).Count
+
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending } | Should -Throw $Pattern
+
+        [IO.File]::ReadAllText($pendingPath) | Should -BeExactly $before
+        @(Get-ChildItem -LiteralPath (Join-Path $fixture.Installation.Root 'backups') -Directory).Count | Should -Be $backupsBefore
+        Should -Invoke Protect-AntojitPath -ModuleName AntojitOS.Update -Times 0 -Exactly -ParameterFilter { (Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*' }
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 1 -Exactly
+        Should -Invoke Initialize-AntojitRuntime -ModuleName AntojitOS.Update -Times 1 -Exactly
+    }
+
+    It 'preserves the migration barrier and recovery lineage when a resumed build fails' {
+        $fixture = $global:AntojitFolderFixture
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+        $previousText = [IO.File]::ReadAllText($pendingPath)
+        $previous = $previousText | ConvertFrom-Json
+        $applicationHash = (Get-AntojitUpdateManifest -Root $previous.SnapshotPath).ApplicationHash
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'apps/api/src/main.ts' -Content 'newer app must wait'
+        Write-FolderUpdateFile -Root $fixture.Source -RelativePath 'scripts/windows/AntojitOS.Printing.psm1' -Content '# corrected helper'
+        $fixture | Add-Member -MemberType NoteProperty -Name RecoveryDirectories -Value @()
+        Mock Protect-AntojitPath {
+            param($Path)
+            if ((Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*') { $global:AntojitFolderFixture.RecoveryDirectories += $Path }
+        } -ModuleName AntojitOS.Update
+        $fixture.Failure = 'build'
+
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending } | Should -Throw '*candidate build failed*'
+
+        $retry = Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json
+        $retry.Stage | Should -BeExactly 'building'
+        $retry.MayHaveMigrated | Should -BeTrue
+        $retry.ApplicationHash | Should -BeExactly $applicationHash
+        $retry.FirstBackupDirectory | Should -BeExactly $previous.FirstBackupDirectory
+        $retry.VerifiedBackups | Should -Contain $previous.VerifiedBackups[0]
+        $retry.BootstrapFixRetries[0].PreviousSourceHash | Should -BeExactly $previous.SourceHash
+        $retry.BootstrapFixRetries[0].Recovery | Should -BeTrue
+        [IO.File]::ReadAllText((Join-Path $retry.LatestBackupDirectory 'previous-pending.json')) | Should -BeExactly $previousText
+        (Get-AntojitUpdateManifest -Root $previous.SnapshotPath).Hash | Should -BeExactly $previous.SourceHash
+        (Get-AntojitUpdateManifest -Root $retry.SnapshotPath).Hash | Should -BeExactly $retry.SourceHash
+        foreach ($directory in $fixture.RecoveryDirectories) { Test-Path -LiteralPath $directory | Should -BeFalse }
+        Should -Invoke Invoke-AntojitCompose -ModuleName AntojitOS.Update -Times 0 -Exactly -ParameterFilter { $Arguments[0] -eq 'start' }
+        Should -Invoke Invoke-AntojitCompose -ModuleName AntojitOS.Update -Times 1 -Exactly -ParameterFilter { $Arguments[0] -eq 'up' -and $Arguments -contains 'api' }
+    }
+
+    It 'rejects a linked frozen recovery path (<LinkedPart>)' -ForEach @(
+        @{ LinkedPart = 'Source' }
+        @{ LinkedPart = 'Parent' }
+    ) {
+        $fixture = $global:AntojitFolderFixture
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+        $before = [IO.File]::ReadAllText($pendingPath)
+        $pending = $before | ConvertFrom-Json
+        $linkPath = if ($LinkedPart -eq 'Source') { $pending.SnapshotPath } else { Split-Path -Parent $pending.SnapshotPath }
+        $external = Join-Path $TestDrive ('external-' + [guid]::NewGuid().ToString('N'))
+        Move-Item -LiteralPath $linkPath -Destination $external
+        try { New-Item -ItemType SymbolicLink -Path $linkPath -Target $external -ErrorAction Stop | Out-Null }
+        catch { Set-ItResult -Skipped -Because 'This host cannot create directory symbolic links.'; return }
+
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending } | Should -Throw '*no puede contener enlaces*'
+
+        [IO.File]::ReadAllText($pendingPath) | Should -BeExactly $before
+        Should -Invoke Protect-AntojitPath -ModuleName AntojitOS.Update -Times 0 -Exactly -ParameterFilter { (Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*' }
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 1 -Exactly
+        Should -Invoke Initialize-AntojitRuntime -ModuleName AntojitOS.Update -Times 1 -Exactly
+    }
+
+    It 'rejects a bootstrap ZIP changed while preparing recovery without overwriting pending state' {
+        $fixture = $global:AntojitFolderFixture
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+        $before = [IO.File]::ReadAllText($pendingPath)
+        $fixture | Add-Member -MemberType NoteProperty -Name RecoveryDirectories -Value @()
+        Mock Protect-AntojitPath {
+            param($Path)
+            if ((Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*') { $global:AntojitFolderFixture.RecoveryDirectories += $Path }
+        } -ModuleName AntojitOS.Update
+        Mock Copy-Item {
+            param($LiteralPath, $Destination)
+            [IO.File]::Copy($LiteralPath, $Destination, $true)
+            if ($LiteralPath -eq (Join-Path $global:AntojitFolderFixture.Source 'final_script.ps1')) {
+                [IO.File]::WriteAllText((Join-Path $global:AntojitFolderFixture.Source 'apps/api/src/main.ts'), 'changed during bootstrap copy')
+            }
+        } -ModuleName AntojitOS.Update
+
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending } | Should -Throw '*ZIP de auxiliares cambio*'
+
+        [IO.File]::ReadAllText($pendingPath) | Should -BeExactly $before
+        $fixture.RecoveryDirectories.Count | Should -Be 1
+        foreach ($directory in $fixture.RecoveryDirectories) { Test-Path -LiteralPath $directory | Should -BeFalse }
+        Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 1 -Exactly
+        Should -Invoke Initialize-AntojitRuntime -ModuleName AntojitOS.Update -Times 1 -Exactly
+    }
+
+    It 'keeps the original failure when cleanup of the temporary recovery directory fails' {
+        $fixture = $global:AntojitFolderFixture
+        $fixture.Failure = 'verify'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*deployed API verification failed*'
+        $fixture.Failure = 'build'
+        $fixture | Add-Member -MemberType NoteProperty -Name RecoveryDirectories -Value @()
+        Mock Protect-AntojitPath {
+            param($Path)
+            if ((Split-Path -Leaf $Path) -like 'AntojitOS-recovery-*') { $global:AntojitFolderFixture.RecoveryDirectories += $Path }
+        } -ModuleName AntojitOS.Update
+        Mock Remove-Item { throw 'Fixture cleanup failed.' } -ModuleName AntojitOS.Update -ParameterFilter { (Split-Path -Leaf $LiteralPath) -like 'AntojitOS-recovery-*' }
+        try {
+            { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance -ResumePending } | Should -Throw '*candidate build failed*'
+            $pendingPath = Join-Path $fixture.Installation.StateDirectory 'update-pending.json'
+            (Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json).MayHaveMigrated | Should -BeTrue
+            Should -Invoke Remove-Item -ModuleName AntojitOS.Update -Times 1 -Exactly -ParameterFilter { (Split-Path -Leaf $LiteralPath) -like 'AntojitOS-recovery-*' }
+        } finally {
+            foreach ($directory in $fixture.RecoveryDirectories) { Remove-Item -LiteralPath $directory -Recurse -Force }
+        }
     }
 
     It 'recovers a pending migrated deployment from a ZIP correcting only Windows bootstrap and preserves its audit trail' {

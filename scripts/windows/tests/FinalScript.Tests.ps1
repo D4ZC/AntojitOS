@@ -19,7 +19,7 @@ Describe 'Unified workflow dispatch' {
 param([switch]$Managed, [string]$InstallPath, [string]$SourcePath, [string]$PrinterQueue, [string]$RepositoryUrl, [string]$Branch,
     [int]$HttpPort, [int]$InternalHttpPort, [string]$PrinterHost, [int]$PrinterPort,
     [string]$AutoStartMode, [switch]$RegisterAutoStart, [switch]$ForceRegister,
-    [switch]$ConfirmMaintenance)
+    [switch]$ConfirmMaintenance, [switch]$ResumePending)
 $bound = @{}
 foreach ($name in $PSBoundParameters.Keys) { $bound[$name] = $PSBoundParameters[$name] }
 $global:AntojitFinalWorkflowTrace += [pscustomobject]@{ File = [IO.Path]::GetFileName($PSCommandPath); Bound = $bound }
@@ -74,6 +74,21 @@ if ($global:AntojitFinalWorkflowFailure) { throw $global:AntojitFinalWorkflowFai
         $call = $global:AntojitFinalWorkflowTrace[0]
         $call.Bound.SourcePath | Should -BeExactly $options.SourcePath
         $call.Bound.PrinterQueue | Should -BeExactly $options.PrinterQueue
+        $call.Bound.ConfirmMaintenance | Should -BeTrue
+    }
+
+    It 'passes recovery explicitly without changing its source folder or maintenance confirmation' {
+        $options = @{
+            InstallPath = (Join-Path $TestDrive 'existing installation')
+            SourcePath = (Join-Path $TestDrive 'new ZIP helpers')
+            ResumePending = $true
+            ConfirmMaintenance = $true
+        }
+        Invoke-AntojitWorkflow -Action Update -Options $options
+        $call = $global:AntojitFinalWorkflowTrace[0]
+        $call.File | Should -Be '03-actualizar.ps1'
+        $call.Bound.ResumePending | Should -BeTrue
+        $call.Bound.SourcePath | Should -BeExactly $options.SourcePath
         $call.Bound.ConfirmMaintenance | Should -BeTrue
     }
 
@@ -164,6 +179,67 @@ Describe 'Unified launcher diagnostics and unattended operation' {
         Should -Invoke Invoke-AntojitWorkflow -Times 1 -Exactly -ParameterFilter {
             $Action -eq 'Update' -and $Options.ConfirmMaintenance -and $Options.SourcePath -eq $script:FinalOriginalEntryRoot
         }
+    }
+
+    It 'recovers through menu six using the new ZIP helpers without asking to change the printer' {
+        $destination = Join-Path $TestDrive 'pending installation'
+        $state = Join-Path $destination 'var/windows'
+        New-Item -ItemType Directory -Path $state -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $state 'update-pending.json') -Value '{}'
+        Mock Resolve-AntojitInstallPath { $destination }
+        Mock Get-AntojitInstallation { [pscustomobject]@{ Root = $destination; StateDirectory = $state; SourceMode = 'folder' } }
+        Mock Read-AntojitAction { 'ResumeUpdate' }
+        Mock Read-Host { 'ACTUALIZAR' } -ParameterFilter { $Prompt -like '*Escribe ACTUALIZAR*' }
+        Mock Get-AntojitPrintConfiguration { throw 'Recovery must keep the existing printer.' }
+        $options = @{ Action = 'Menu'; NoPause = $true; SessionDirectory = (Join-Path $TestDrive 'menu recovery logs') }
+        Invoke-AntojitFinalMain -Options $options | Should -Be 0
+        Should -Invoke Read-Host -Times 1 -Exactly -ParameterFilter { $Prompt -like '*Escribe ACTUALIZAR*' }
+        Should -Invoke Invoke-AntojitWorkflow -Times 1 -Exactly -ParameterFilter {
+            $Action -eq 'Update' -and $Options.ResumePending -and $Options.ConfirmMaintenance -and
+            $Options.SourcePath -eq $script:FinalOriginalEntryRoot
+        }
+        Should -Invoke Get-AntojitPrintConfiguration -Times 0 -Exactly
+        Should -Invoke Write-AntojitLog -Times 1 -Exactly -ParameterFilter { $Message -like 'Recuperacion completada.*ACTUALIZAR-APP.cmd*' }
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -like '*version pendiente guardada*' }
+    }
+
+    It 'cancels explicit recovery before invoking the updater when maintenance is not confirmed' {
+        $destination = Join-Path $TestDrive 'cancelled recovery installation'
+        $state = Join-Path $destination 'var/windows'
+        New-Item -ItemType Directory -Path $state -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $state 'update-pending.json') -Value '{}'
+        Mock Resolve-AntojitInstallPath { $destination }
+        Mock Get-AntojitInstallation { [pscustomobject]@{ Root = $destination; StateDirectory = $state } }
+        Mock Read-Host { '' }
+        $options = @{ Action = 'Update'; ResumePending = $true; NoPause = $true; SessionDirectory = (Join-Path $TestDrive 'cancelled recovery logs') }
+        Invoke-AntojitFinalMain -Options $options | Should -Be 0
+        Should -Invoke Invoke-AntojitWorkflow -Times 0 -Exactly
+        Get-Content -LiteralPath (Join-Path $state 'update-pending.json') -Raw | Should -Match '^\{\}'
+        Should -Invoke Write-AntojitLog -Times 0 -Exactly -ParameterFilter { $Message -like 'Recuperacion completada.*' }
+    }
+
+    It 'rejects recovery without pending state before asking for maintenance' {
+        $destination = Join-Path $TestDrive 'installation without pending state'
+        Mock Resolve-AntojitInstallPath { $destination }
+        Mock Get-AntojitInstallation { [pscustomobject]@{ Root = $destination; StateDirectory = (Join-Path $destination 'var/windows') } }
+        $options = @{ Action = 'Update'; ResumePending = $true; NoPause = $true; SessionDirectory = (Join-Path $TestDrive 'no pending recovery logs') }
+        Invoke-AntojitFinalMain -Options $options | Should -Be 1
+        Should -Invoke Invoke-AntojitWorkflow -Times 0 -Exactly
+        Should -Invoke Read-Host -Times 0 -Exactly
+        Get-Content -LiteralPath (Join-Path $options.SessionDirectory 'error-resumen.txt') -Raw | Should -Match 'No hay una actualizacion pendiente'
+    }
+
+    It 'rejects recovery combined with daily start or a Git repository' {
+        $options = @{ Action = 'Start'; ResumePending = $true; NoPause = $true; SessionDirectory = (Join-Path $TestDrive 'invalid recovery action') }
+        Invoke-AntojitFinalMain -Options $options | Should -Be 1
+        Should -Invoke Invoke-AntojitWorkflow -Times 0 -Exactly
+        $destination = Join-Path $TestDrive 'Git recovery installation'
+        Mock Resolve-AntojitInstallPath { $destination }
+        Mock Get-AntojitInstallation { [pscustomobject]@{ Root = $destination } }
+        $options = @{ Action = 'Update'; ResumePending = $true; RepositoryUrl = 'https://github.com/restaurant/AntojitOS'; NoPause = $true; SessionDirectory = (Join-Path $TestDrive 'invalid recovery repository') }
+        Invoke-AntojitFinalMain -Options $options | Should -Be 1
+        Should -Invoke Invoke-AntojitWorkflow -Times 0 -Exactly
+        Should -Invoke Read-Host -Times 0 -Exactly
     }
 
     It 'does not treat the protected launcher bundle as a downloaded ZIP project' {
@@ -359,18 +435,21 @@ Describe 'Unified launcher diagnostics and unattended operation' {
 }
 
 Describe 'Windows double-click launcher' {
-    It 'passes the extracted ZIP folder and returns the original result from ACTUALIZAR-APP' -Skip:($env:OS -ne 'Windows_NT') {
+    It 'passes the extracted ZIP folder and returns the original result from <Launcher>' -ForEach @(
+        @{ Launcher = 'ACTUALIZAR-APP.cmd'; Recovery = $false }
+        @{ Launcher = 'RECUPERAR-ACTUALIZACION.cmd'; Recovery = $true }
+    ) -Skip:($env:OS -ne 'Windows_NT') {
         $fixture = Join-Path $TestDrive 'ZIP extracted with spaces'
         New-Item -ItemType Directory -Path $fixture -Force | Out-Null
-        Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $script:FinalScriptPath) 'ACTUALIZAR-APP.cmd') -Destination (Join-Path $fixture 'ACTUALIZAR-APP.cmd')
+        Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $script:FinalScriptPath) $Launcher) -Destination (Join-Path $fixture $Launcher)
         $child = @'
-param([string]$Action, [string]$SourcePath, [string]$InstallPath, [switch]$NoPause)
-@{ Action = $Action; SourcePath = $SourcePath; InstallPath = $InstallPath; NoPause = [bool]$NoPause } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'arguments.json')
+param([string]$Action, [string]$SourcePath, [string]$InstallPath, [switch]$NoPause, [switch]$ResumePending)
+@{ Action = $Action; SourcePath = $SourcePath; InstallPath = $InstallPath; NoPause = [bool]$NoPause; ResumePending = [bool]$ResumePending } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $PSScriptRoot 'arguments.json')
 exit 23
 '@
         Set-Content -LiteralPath (Join-Path $fixture 'final_script.ps1') -Value $child -Encoding UTF8
         $install = Join-Path $TestDrive 'restaurant installation'
-        $command = '""{0}" -InstallPath "{1}" <nul"' -f (Join-Path $fixture 'ACTUALIZAR-APP.cmd'), $install
+        $command = '""{0}" -InstallPath "{1}" <nul"' -f (Join-Path $fixture $Launcher), $install
         $start = New-Object Diagnostics.ProcessStartInfo
         $start.FileName = Join-Path $env:SystemRoot 'System32/cmd.exe'
         $start.Arguments = '/d /s /c ' + $command
@@ -395,6 +474,7 @@ exit 23
         [IO.Path]::GetFullPath($record.SourcePath).TrimEnd('\', '/') | Should -Be ([IO.Path]::GetFullPath($fixture).TrimEnd('\', '/'))
         $record.InstallPath | Should -Be $install
         $record.NoPause | Should -BeTrue
+        $record.ResumePending | Should -Be $Recovery
     }
 
     It 'preserves arguments and a restart-required exit code after keeping the console open' -Skip:($env:OS -ne 'Windows_NT') {
