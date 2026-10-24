@@ -57,7 +57,7 @@ function Get-AntojitUpdateManifest {
 function Assert-AntojitUpdateProject {
     param([Parameter(Mandatory)][string]$Root)
     foreach ($file in @('package.json', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'tsconfig.base.json', 'Containerfile', 'compose.pilot.yaml', '.dockerignore',
-        'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'scripts/pilot.mjs',
+        'final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd', 'scripts/pilot.mjs', 'scripts/check-npm-registry.mjs',
         'scripts/windows/01-instalar.ps1', 'scripts/windows/02-iniciar.ps1', 'scripts/windows/03-actualizar.ps1',
         'scripts/windows/AntojitOS.Dependencies.psm1', 'scripts/windows/AntojitOS.Update.psm1',
         'scripts/windows/AntojitOS.Windows.psm1', 'scripts/windows/AntojitOS.Printing.psm1',

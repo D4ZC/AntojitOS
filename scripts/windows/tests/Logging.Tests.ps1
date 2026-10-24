@@ -85,6 +85,58 @@ Describe 'Persistent Windows command diagnostics' {
         $failure.Exception.Message | Should -Match '\[stderr\] fixture deprecated warning'
     }
 
+    It 'explains an early npm connection failure after its warning leaves the diagnostic tail: <ErrorCode>' -TestCases @(
+        @{ ErrorCode = 'ETIMEDOUT' }
+        @{ ErrorCode = 'ECONNRESET' }
+        @{ ErrorCode = 'EAI_AGAIN' }
+        @{ ErrorCode = 'ENOTFOUND' }
+        @{ ErrorCode = 'ENETUNREACH' }
+        @{ ErrorCode = 'ECONNREFUSED' }
+    ) {
+        param($ErrorCode)
+        $command = '[Console]::Out.WriteLine("WARN GET https://registry.npmjs.org/fixture error (' + $ErrorCode + '). Will retry in 5 seconds"); 1..30 | ForEach-Object { [Console]::Out.WriteLine("fixture build line $_") }; exit 111'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Exception.Message | Should -Match 'codigo 111'
+        $failure.Exception.Message | Should -Match 'fixture build line 30'
+        $failure.Exception.Message | Should -Not -Match 'Will retry in'
+        $failure.Exception.Message | Should -Match 'Se registraron problemas de conexion con registry\.npmjs\.org durante la descarga'
+        $failure.Exception.Message | Should -Match 'Internet.*DNS de Podman.*VPN o cortafuegos'
+        $failure.Exception.Message | Should -Match 'mismo ZIP'
+        Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Match ([regex]::Escape("error ($ErrorCode). Will retry in"))
+    }
+
+    It 'allows an npm retry to recover without reporting a command failure' {
+        $command = '[Console]::Error.WriteLine("WARN GET https://registry.npmjs.org/fixture error (ETIMEDOUT). Will retry in 5 seconds"); [Console]::Out.WriteLine("fixture recovered"); exit 0'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $output = @(Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Capture -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded))
+        $output.Count | Should -Be 1
+        $output[0] | Should -Be 'fixture recovered'
+        $log = Get-Content -LiteralPath $script:LoggingPhasePath -Raw
+        $log | Should -Match '\[EXIT\] 0;'
+        $log | Should -Not -Match 'Se registraron problemas de conexion'
+    }
+
+    It 'does not diagnose npm for an unrelated failure: <Diagnostic>' -TestCases @(
+        @{ Diagnostic = 'GET https://example.org/fixture error (ETIMEDOUT)' }
+        @{ Diagnostic = 'GET https://registry.npmjs.org.example.org/fixture error (ETIMEDOUT)' }
+        @{ Diagnostic = 'fixture compilation failed' }
+    ) {
+        param($Diagnostic)
+        $command = '[Console]::Error.WriteLine("' + $Diagnostic + '"); exit 17'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Exception.Message | Should -Match 'codigo 17'
+        $failure.Exception.Message | Should -Match ([regex]::Escape($Diagnostic))
+        $failure.Exception.Message | Should -Not -Match 'Se registraron problemas de conexion'
+    }
+
     It 'bounds each output channel independently so one cannot discard the other diagnostic' {
         $command = '1..30 | ForEach-Object { [Console]::Out.WriteLine("fixture stdout line $_") }; 1..30 | ForEach-Object { [Console]::Error.WriteLine("fixture stderr line $_") }; exit 33'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))

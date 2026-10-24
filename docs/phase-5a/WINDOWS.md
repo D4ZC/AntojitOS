@@ -208,6 +208,14 @@ Para solicitar ayuda, compartir la carpeta de registros de esa ejecución y desc
 
 La ayuda del lanzador se puede consultar con `Get-Help .\final_script.ps1 -Full`.
 
+### La descarga muestra `registry.npmjs.org`, `ETIMEDOUT` y reintentos
+
+La construccion necesita descargar dependencias de npm, incluso cuando el proyecto se obtuvo como ZIP. Ese aviso significa que una solicitud de red agoto su tiempo de espera. La conexion que importa es la del contenedor de Podman; que Windows pueda navegar no confirma que el contenedor tenga acceso.
+
+Cuando se necesita preparar dependencias, la construccion comprueba el registro desde el contenedor, con un limite de 15 segundos. Las descargas de pnpm tienen un limite de 30 segundos por intento y un reintento tras 5 segundos, con cuatro solicitudes simultaneas. Esos limites son por solicitud; la actualizacion completa puede tardar mas. Se aprovechan los paquetes en cache y se conservan HTTPS, la verificacion de certificados y el archivo de dependencias bloqueado.
+
+Si el error se repite, comprobar Internet en la PC de caja y probar otra conexion estable, por ejemplo el punto de acceso del telefono. Despues reintentar `ACTUALIZAR-APP.cmd` desde el mismo ZIP. Si persiste, abrir `final_script.cmd`, opcion **5**, y compartir el `error-resumen.txt` o `commands.log` de la ejecucion fallida para revisar la conexion, DNS o reglas de VPN/cortafuegos de Podman.
+
 ### El instalador rechaza la URL oficial de Podman
 
 Si la instalación se detiene con `La URL del instalador de containers/podman no pertenece a su publicacion oficial`, se está usando una versión anterior del instalador. El repositorio oficial de Podman cambió a `podman-container-tools/podman`; GitHub redirige la consulta anterior, pero los archivos de la publicación ya usan la dirección nueva.

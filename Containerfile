@@ -1,14 +1,25 @@
 FROM node:24-alpine AS build
 
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 WORKDIR /workspace
+COPY scripts/check-npm-registry.mjs scripts/check-npm-registry.mjs
+RUN node scripts/check-npm-registry.mjs \
+  && corepack enable && corepack prepare pnpm@10.28.2 --activate
+
+# Limit each failed request, including the production packaging steps. Keep
+# the official registry, TLS verification and the lockfile integrity checks.
+ENV npm_config_fetch_timeout=30000 \
+    npm_config_fetch_retries=1 \
+    npm_config_fetch_retry_mintimeout=5000 \
+    npm_config_fetch_retry_maxtimeout=5000 \
+    npm_config_network_concurrency=4
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.base.json ./
 COPY apps/api/package.json apps/api/package.json
 COPY apps/pos/package.json apps/pos/package.json
 COPY apps/print-agent/package.json apps/print-agent/package.json
 COPY packages/domain/package.json packages/domain/package.json
-RUN pnpm install --frozen-lockfile
+RUN node scripts/check-npm-registry.mjs \
+  && pnpm install --frozen-lockfile --prefer-offline --reporter=append-only
 
 COPY apps apps
 COPY packages packages

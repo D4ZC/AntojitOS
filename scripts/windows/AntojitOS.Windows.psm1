@@ -82,6 +82,7 @@ function Invoke-AntojitCommand {
     $recentStdout = New-Object 'System.Collections.Generic.Queue[string]'
     $recentStderr = New-Object 'System.Collections.Generic.Queue[string]'
     $privateKeyBlock = $false
+    $npmRegistryConnectionFailure = $false
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
     $code = $null
@@ -108,6 +109,12 @@ function Invoke-AntojitCommand {
                         $safeLine = '[PRIVATE KEY REDACTED]'
                         $privateKeyBlock = $line -notmatch '-----END [^-]*PRIVATE KEY-----'
                     }
+                    # Keep this signal even when later build output pushes the
+                    # original npm warning outside the bounded diagnostic tail.
+                    if ($safeLine -match '(?<![A-Za-z0-9.-])registry\.npmjs\.org(?=[:/\s]|$)' -and
+                        $safeLine -match '\b(?:ETIMEDOUT|ECONNRESET|EAI_AGAIN|ENOTFOUND|ENETUNREACH|ECONNREFUSED)\b') {
+                        $npmRegistryConnectionFailure = $true
+                    }
                     if ($safeLine.Length -gt 1000) { $safeLine = $safeLine.Substring(0, 1000) + ' [truncado]' }
                     # Some tools print warnings to stderr and the actual build
                     # failure to stdout. Retain a tail from each independently.
@@ -132,6 +139,9 @@ function Invoke-AntojitCommand {
             $detail = @($recentStdout.ToArray()) + @($recentStderr.ToArray())
             $message = "El comando $command termino con codigo $code."
             if ($detail.Count -gt 0) { $message += [Environment]::NewLine + 'Detalle del comando (ultimas lineas por canal):' + [Environment]::NewLine + ($detail -join [Environment]::NewLine) }
+            if ($npmRegistryConnectionFailure) {
+                $message += [Environment]::NewLine + 'Se registraron problemas de conexion con registry.npmjs.org durante la descarga. Revisa la conexion a Internet, el DNS de Podman y si una VPN o cortafuegos bloquea la descarga. Despues vuelve a ejecutar la actualizacion con el mismo ZIP.'
+            }
             $logPath = Get-AntojitLogPath
             if ($logPath) { $message += [Environment]::NewLine + "Registro completo: $logPath" }
             throw $message

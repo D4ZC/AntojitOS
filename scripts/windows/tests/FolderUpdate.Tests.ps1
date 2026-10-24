@@ -37,6 +37,7 @@ BeforeAll {
             'packages/domain/package.json' = '{"name":"@antojit-os/domain"}'
             'packages/domain/src/index.ts' = 'export const domain = true;'
             'scripts/pilot.mjs' = '// fixture pilot'
+            'scripts/check-npm-registry.mjs' = '// fixture npm connectivity check'
             'scripts/windows/01-instalar.ps1' = '# fixture installer'
             'scripts/windows/02-iniciar.ps1' = '# fixture start'
             'scripts/windows/03-actualizar.ps1' = '# fixture updater'
@@ -299,14 +300,17 @@ Describe 'Folder update maintenance and recovery' {
         Test-Path -LiteralPath (Join-Path $fixture.Installation.StateDirectory 'update-pending.json') | Should -BeFalse
     }
 
-    It 'rejects an incomplete candidate missing the startup helper before locking or replacing installed helpers' {
+    It 'rejects an incomplete candidate missing <RelativePath> before locking or replacing installed helpers' -ForEach @(
+        @{ RelativePath = 'scripts/windows/02-iniciar.ps1' }
+        @{ RelativePath = 'scripts/check-npm-registry.mjs' }
+    ) {
         $fixture = $global:AntojitFolderFixture
-        $relative = 'scripts/windows/02-iniciar.ps1'
+        $relative = $RelativePath
         $installedPath = Join-Path $fixture.Installation.Root $relative
         $before = [IO.File]::ReadAllText($installedPath)
         Remove-Item -LiteralPath (Join-Path $fixture.Source $relative) -Force
 
-        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw '*02-iniciar.ps1*'
+        { Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance } | Should -Throw "*$relative*"
 
         [IO.File]::ReadAllText($installedPath) | Should -BeExactly $before
         Should -Invoke Enter-AntojitOperation -ModuleName AntojitOS.Update -Times 0 -Exactly
