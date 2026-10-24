@@ -48,7 +48,8 @@ Describe 'Legacy installation launcher repair' {
         $script:LauncherBootstrap = Join-Path $TestDrive 'program data'
         $script:LauncherFiles = @('final_script.ps1', 'scripts\windows\01-instalar.ps1',
             'scripts\windows\02-iniciar.ps1', 'scripts\windows\03-actualizar.ps1',
-            'scripts\windows\AntojitOS.Windows.psm1', 'scripts\windows\AntojitOS.Dependencies.psm1')
+            'scripts\windows\AntojitOS.Windows.psm1', 'scripts\windows\AntojitOS.Dependencies.psm1',
+            'scripts\windows\AntojitOS.Printing.psm1', 'scripts\windows\AntojitOS.Update.psm1')
         foreach ($file in $script:LauncherFiles) {
             foreach ($root in @($script:LauncherSource, $script:LauncherInstalled)) {
                 Write-LauncherFixture -Root $root -RelativePath $file -Content "# $file`nparam([switch]`$Managed)"

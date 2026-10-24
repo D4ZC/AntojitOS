@@ -53,6 +53,81 @@ Describe 'Persistent Windows command diagnostics' {
         Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Match 'fixture readiness warning'
     }
 
+    It 'includes the native diagnostic and complete log path in the reported failure' {
+        $command = '[Console]::Out.WriteLine("build context"); [Console]::Error.WriteLine("fixture build could not connect to Podman"); exit 19'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Exception.Message | Should -Match 'codigo 19'
+        $failure.Exception.Message | Should -Match 'fixture build could not connect to Podman'
+        $failure.Exception.Message | Should -Match ([regex]::Escape($script:LoggingPhasePath))
+        $failure.Exception.Message | Should -Match ([regex]::Escape($script:LoggingNativeExecutable))
+    }
+
+    It 'reports stdout when the failing tool has no stderr diagnostic' {
+        $command = '[Console]::Out.WriteLine("fixture compile failed on stdout"); exit 27'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) } |
+            Should -Throw '*fixture compile failed on stdout*'
+    }
+
+    It 'bounds and redacts the diagnostic tail while retaining the complete log' {
+        $command = '1..30 | ForEach-Object { [Console]::Error.WriteLine("fixture error line $_") }; [Console]::Error.WriteLine("TOKEN=fixture-command-secret"); exit 31'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        $failure.Exception.Message | Should -Match 'fixture error line 30'
+        $failure.Exception.Message | Should -Not -Match 'fixture error line 1(?:\D|$)'
+        $failure.Exception.Message | Should -Not -Match 'fixture-command-secret'
+        $failure.Exception.Message | Should -Match 'TOKEN=\[REDACTED\]'
+        Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Match 'fixture error line 1(?:\D|$)'
+    }
+
+    It 'redacts a private key even when its BEGIN marker has fallen outside the error tail' {
+        $command = '[Console]::Error.WriteLine("-----BEGIN PRIVATE KEY-----"); 1..20 | ForEach-Object { [Console]::Error.WriteLine("fixture-private-key-body-$_") }; [Console]::Error.WriteLine("-----END PRIVATE KEY-----"); exit 32'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        $failure.Exception.Message | Should -Not -Match 'fixture-private-key-body'
+        $failure.Exception.Message | Should -Match '\[PRIVATE KEY REDACTED\]'
+        Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Not -Match 'fixture-private-key-body'
+    }
+
+    It 'drains both native pipes without mixing stderr into captured stdout' {
+        $command = '1..80 | ForEach-Object { [Console]::Out.WriteLine(("o" * 1024)); [Console]::Error.WriteLine(("e" * 1024)) }; exit 0'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $output = @(Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Capture -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) 6>$null)
+        $output.Count | Should -Be 80
+        $output[0] | Should -BeExactly ('o' * 1024)
+        $output[-1] | Should -BeExactly ('o' * 1024)
+        Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Match '\[stderr\] e{1024}'
+    }
+
+    It 'preserves a process launch error instead of replacing it with a missing exit code' {
+        $missing = Join-Path $TestDrive 'missing-native-executable.exe'
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $missing }
+        catch { $failure = $_ }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Exception.ToString() | Should -Match ([regex]::Escape($missing))
+        $failure.Exception.Message | Should -Not -Match 'termino con codigo sin codigo'
+        Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Match 'Win32Exception'
+    }
+
+    It 'preserves spaces, empty strings, embedded quotes and trailing backslashes in native arguments' {
+        $fixture = Join-Path $TestDrive 'echo native arguments.ps1'
+        'ConvertTo-Json -InputObject @($args) -Compress' | Set-Content -LiteralPath $fixture -Encoding UTF8
+        $arguments = @('', 'two words', 'say "hello"', 'C:\folder with spaces\', 'literal $() and & characters')
+        $output = @(Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Capture -Arguments (@('-NoProfile', '-NonInteractive', '-File', $fixture) + $arguments))
+        $actual = ($output -join "`n") | ConvertFrom-Json
+        @($actual).Count | Should -Be $arguments.Count
+        for ($i = 0; $i -lt $arguments.Count; $i++) { $actual[$i] | Should -BeExactly $arguments[$i] }
+    }
+
     It 'redacts pilot credentials and configuration secrets before saving the logs' {
         $codeLabel = 'C' + [char]0xF3 + 'digo'
         Write-AntojitLog -Message "$codeLabel ADMIN: 73918264"

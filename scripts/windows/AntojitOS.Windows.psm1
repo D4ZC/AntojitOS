@@ -45,42 +45,84 @@ function Invoke-AntojitCommand {
         [string]$WorkingDirectory,
         [switch]$Capture
     )
-    $shownArguments = @($Arguments | ForEach-Object {
-        if ($_ -match '[\s"]' -or $_.Length -eq 0) { '"' + $_.Replace('"', '\"') + '"' }
-        else { $_ }
-    }) -join ' '
-    $command = ConvertTo-AntojitLogText -Text ('"{0}" {1}' -f $FilePath, $shownArguments)
+    # ProcessStartInfo avoids Windows PowerShell 5.1's native argument binder,
+    # which drops empty arguments and embedded quotes. Read both pipes together:
+    # stderr may contain warnings even when the process exits successfully.
+    $startInfo = New-Object Diagnostics.ProcessStartInfo
+    $startInfo.FileName = $FilePath
+    $startInfo.Arguments = (@($Arguments | ForEach-Object { ConvertTo-AntojitNativeArgument $_ }) -join ' ')
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.RedirectStandardError = $true
+    $startInfo.WorkingDirectory = if ($WorkingDirectory) {
+        $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($WorkingDirectory)
+    } else { (Get-Location).ProviderPath }
+    $command = ConvertTo-AntojitLogText -Text ('"{0}" {1}' -f $FilePath, $startInfo.Arguments)
     $output = New-Object 'System.Collections.Generic.List[string]'
-    $locationPushed = $false
+    $recentOutput = New-Object 'System.Collections.Generic.Queue[string]'
+    $recentErrors = New-Object 'System.Collections.Generic.Queue[string]'
+    $privateKeyBlock = $false
+    $process = New-Object Diagnostics.Process
+    $process.StartInfo = $startInfo
     $code = $null
     $timer = [Diagnostics.Stopwatch]::StartNew()
     Write-AntojitLog -Message "[CMD] $command"
+    Write-AntojitLog -Message "[CWD] $($startInfo.WorkingDirectory)"
     try {
-        if ($WorkingDirectory) { Push-Location -LiteralPath $WorkingDirectory; $locationPushed = $true }
-        Write-AntojitLog -Message "[CWD] $((Get-Location).Path)"
-        # Windows PowerShell turns native stderr into ErrorRecords. Check the exit
-        # code, rather than interpreting a successful program's stderr as failure.
-        $previousPreference = $ErrorActionPreference
-        $ErrorActionPreference = 'Continue'
-        try {
-            $global:LASTEXITCODE = $null
-            & $FilePath @Arguments 2>&1 | ForEach-Object {
-                $text = $_.ToString()
-                $stream = if ($_ -is [Management.Automation.ErrorRecord]) { 'stderr' } else { 'stdout' }
-                # JSON and other machine-readable captures contain stdout only;
-                # successful tools can also emit warnings on stderr.
-                if ($Capture -and $stream -eq 'stdout') { $output.Add($text) }
-                Write-AntojitLog -Message "[$stream] $text"
+        if (-not $process.Start()) { throw "No se pudo iniciar el comando $command." }
+        $stdoutTask = $process.StandardOutput.ReadLineAsync()
+        $stderrTask = $process.StandardError.ReadLineAsync()
+        while ($null -ne $stdoutTask -or $null -ne $stderrTask) {
+            foreach ($stream in @('stdout', 'stderr')) {
+                $pending = if ($stream -eq 'stdout') { $stdoutTask } else { $stderrTask }
+                if ($null -eq $pending -or -not $pending.IsCompleted) { continue }
+                $line = $pending.GetAwaiter().GetResult()
+                if ($null -ne $line) {
+                    if ($Capture -and $stream -eq 'stdout') { $output.Add($line) }
+                    Write-AntojitLog -Message "[$stream] $line"
+                    # Keep only a bounded, redacted tail for the final error.
+                    # Track multiline keys before trimming, so even a tail that
+                    # no longer includes BEGIN cannot disclose key material.
+                    $safeLine = ConvertTo-AntojitLogText -Text $line
+                    if ($privateKeyBlock -or $line -match '-----BEGIN [^-]*PRIVATE KEY-----') {
+                        $safeLine = '[PRIVATE KEY REDACTED]'
+                        $privateKeyBlock = $line -notmatch '-----END [^-]*PRIVATE KEY-----'
+                    }
+                    if ($safeLine.Length -gt 1000) { $safeLine = $safeLine.Substring(0, 1000) + ' [truncado]' }
+                    $recentOutput.Enqueue("[$stream] $safeLine")
+                    while ($recentOutput.Count -gt 12) { [void]$recentOutput.Dequeue() }
+                    if ($stream -eq 'stderr') {
+                        $recentErrors.Enqueue($safeLine)
+                        while ($recentErrors.Count -gt 12) { [void]$recentErrors.Dequeue() }
+                    }
+                }
+                $next = if ($null -eq $line) { $null } elseif ($stream -eq 'stdout') {
+                    $process.StandardOutput.ReadLineAsync()
+                } else { $process.StandardError.ReadLineAsync() }
+                if ($stream -eq 'stdout') { $stdoutTask = $next } else { $stderrTask = $next }
             }
-            $code = $global:LASTEXITCODE
-        } finally { $ErrorActionPreference = $previousPreference }
-        if ($null -eq $code -or $code -ne 0) {
-            $status = if ($null -eq $code) { 'sin codigo de salida' } else { [string]$code }
-            throw "El comando $command termino con codigo $status."
+            $pendingTasks = @($stdoutTask, $stderrTask | Where-Object { $null -ne $_ })
+            if ($pendingTasks.Count -gt 0) {
+                [void][Threading.Tasks.Task]::WaitAny([Threading.Tasks.Task[]]$pendingTasks, 100)
+            }
+        }
+        $process.WaitForExit()
+        $code = $process.ExitCode
+        if ($code -ne 0) {
+            $detail = if ($recentErrors.Count -gt 0) { $recentErrors.ToArray() -join [Environment]::NewLine }
+                else { $recentOutput.ToArray() -join [Environment]::NewLine }
+            $message = "El comando $command termino con codigo $code."
+            if ($detail) { $message += [Environment]::NewLine + 'Detalle del comando:' + [Environment]::NewLine + $detail }
+            $logPath = Get-AntojitLogPath
+            if ($logPath) { $message += [Environment]::NewLine + "Registro completo: $logPath" }
+            throw $message
         }
         if ($Capture) { return @($output.ToArray()) }
     }
     catch {
+        # Preserve launch, pipe and process errors instead of replacing them
+        # with a misleading native failure that has no exit code.
         Write-AntojitError -ErrorRecord $_
         throw
     }
@@ -88,7 +130,7 @@ function Invoke-AntojitCommand {
         $timer.Stop()
         $status = if ($null -eq $code) { 'sin codigo de salida' } else { [string]$code }
         Write-AntojitLog -Message ("[EXIT] {0}; {1:N1} s; {2}" -f $status, $timer.Elapsed.TotalSeconds, $command)
-        if ($locationPushed) { Pop-Location }
+        $process.Dispose()
     }
 }
 

@@ -19,8 +19,10 @@ ENV VITE_APP_MODE=pos
 RUN pnpm build
 RUN pnpm --filter @antojit-os/api deploy --prod --legacy /output/api
 RUN pnpm --filter @antojit-os/print-agent deploy --prod --legacy /output/print-agent
-RUN rm -rf /output/api/dist /output/print-agent/dist \
+RUN rm -rf /output/api/dist /output/api/migrations /output/print-agent/dist \
   && cp -R /workspace/apps/api/dist /output/api/dist \
+  && cp -R /workspace/apps/api/migrations /output/api/migrations \
+  && test -s /output/api/migrations/0001_foundation.sql \
   && cp -R /workspace/apps/print-agent/dist /output/print-agent/dist
 
 FROM node:24-alpine AS api

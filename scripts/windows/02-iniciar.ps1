@@ -24,6 +24,7 @@ $ErrorActionPreference = 'Stop'
 $operation = $null
 try {
     Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Printing.psm1') -Force -DisableNameChecking
     Assert-AntojitWindows
     Assert-AntojitAdministrator
     $installation = Get-AntojitInstallation -InstallPath (Resolve-AntojitInstallPath -InstallPath $InstallPath)
@@ -62,6 +63,14 @@ try {
                 $existing.Actions[0].Execute -ieq $powershell -and $existing.Actions[0].WorkingDirectory -ieq $installation.Root)
             $sameTask = ($sameTaskSettings -and $existing.Actions[0].Arguments -ceq $arguments)
             $compatibleLegacyTask = ($sameTaskSettings -and -not $sameTask -and ($existing.Actions[0].Arguments -ceq $legacyArguments -or $existing.Actions[0].Arguments -ceq $rootArguments))
+            if ($sameTaskSettings -and $existing.PSObject.Properties['Settings'] -and $existing.Settings -and
+                $existing.Settings.PSObject.Properties['ExecutionTimeLimit'] -and [string]$existing.Settings.ExecutionTimeLimit -ne 'PT0S') {
+                # Native USB printing remains alive beyond the short startup
+                # script. Upgrade this setting without replacing credentials.
+                $existing.Settings.ExecutionTimeLimit = 'PT0S'
+                Set-ScheduledTask -TaskName $taskName -Settings $existing.Settings | Out-Null
+                Write-AntojitLog 'La tarea permite mantener el agente USB activo sin limite de tiempo; se conservaron sus credenciales.'
+            }
         }
         if ($compatibleLegacyTask -and -not $ForceRegister) {
             $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $installation.Root
@@ -73,7 +82,7 @@ try {
             $action = New-ScheduledTaskAction -Execute $powershell -Argument $arguments -WorkingDirectory $installation.Root
             $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries `
                 -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew -RestartCount 3 `
-                -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+                -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit ([TimeSpan]::Zero)
             if ($AutoStartMode -eq 'Startup') {
                 $trigger = New-ScheduledTaskTrigger -AtStartup
                 $trigger.Delay = 'PT45S'
@@ -107,6 +116,9 @@ try {
     # Check the actual public port as well as the internal application's health.
     $health = Invoke-RestMethod -Uri "http://127.0.0.1:$($installation.HttpPort)/api/health/ready" -TimeoutSec 15
     if ($health.status -ne 'ready' -or $health.database -ne 'connected') { throw 'La direccion publica aun no esta lista.' }
+    if ((Get-AntojitPrintConfiguration -Installation $installation).Mode -eq 'native') {
+        Start-AntojitNativePrintAgent -Installation $installation
+    }
     Write-AntojitLog "AntojitOS disponible en http://localhost:$($installation.HttpPort)."
 } catch {
     if (Get-Command Write-AntojitError -ErrorAction SilentlyContinue) {

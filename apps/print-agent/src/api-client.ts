@@ -26,6 +26,7 @@ export class ProductionAgentApi {
   ): Promise<AgentCredentials> {
     const response = await fetch(`${baseUrl}/v1/production-agents/register`, {
       method: "POST",
+      signal: AbortSignal.timeout(5_000),
       headers: {
         "content-type": "application/json",
         "x-bootstrap-token": bootstrapToken,
@@ -61,6 +62,7 @@ export class ProductionAgentApi {
   ): Promise<Response> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method: options.method,
+      signal: AbortSignal.timeout(5_000),
       headers: {
         ...(options.body === undefined ? {} : { "content-type": "application/json" }),
         "x-agent-id": this.credentials.id,

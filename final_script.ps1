@@ -9,12 +9,14 @@ incluso de cargar los modulos. Solicita elevacion con la misma cuenta de Windows
 .EXAMPLE
 .\final_script.ps1 -Action Install
 .EXAMPLE
-.\final_script.ps1 -Action Update -RepositoryUrl https://github.com/EMPRESA/REPO.git -ConfirmMaintenance
+.\final_script.ps1 -Action Update -SourcePath C:\Descargas\AntojitOS-main
 #>
 [CmdletBinding()]
 param(
     [ValidateSet('Menu', 'Install', 'Start', 'AutoStart', 'Update', 'Logs')][string]$Action = 'Menu',
     [string]$InstallPath,
+    [string]$SourcePath,
+    [string]$PrinterQueue,
     [string]$RepositoryUrl,
     [string]$Branch,
     [ValidateRange(1, 65535)][int]$HttpPort,
@@ -103,7 +105,7 @@ function Read-AntojitAction {
     Write-Host '  1. Instalar / completar configuracion (incluye arranque automatico e inicio)'
     Write-Host '  2. Iniciar la aplicacion instalada'
     Write-Host '  3. Configurar / reparar el arranque automatico'
-    Write-Host '  4. Actualizar desde GitHub'
+    Write-Host '  4. Actualizar la app (desde esta carpeta ZIP o GitHub)'
     Write-Host '  5. Abrir la carpeta de logs'
     Write-Host '  0. Salir'
     while ($true) {
@@ -129,6 +131,71 @@ function Read-AntojitAutoStartMode {
     }
 }
 
+function Read-AntojitUsbPrinterQueue {
+    $printers = @()
+    try { $printers = @(Get-Printer -ErrorAction Stop | Sort-Object Name) }
+    catch { Write-Host 'No se pudo consultar la lista de impresoras de Windows.' }
+    Write-Host 'Impresion USB: elige la impresora de caja si deseas activarla en esta actualizacion.'
+    for ($index = 0; $index -lt $printers.Count; $index++) {
+        Write-Host ('  {0}. {1}' -f ($index + 1), $printers[$index].Name)
+    }
+    while ($true) {
+        $answer = (Read-Host 'Numero o nombre exacto de impresora; Enter conserva la configuracion actual').Trim()
+        if (-not $answer) { return $null }
+        $number = 0
+        if ([int]::TryParse($answer, [ref]$number)) {
+            if ($number -ge 1 -and $number -le $printers.Count) { return [string]$printers[$number - 1].Name }
+            Write-Host 'Ese numero no esta en la lista.'
+        } else { return $answer }
+    }
+}
+
+function Set-AntojitUpdateOptions {
+    param([Parameter(Mandatory)][hashtable]$Options)
+    $requestedInstallPath = if ($Options.ContainsKey('InstallPath')) { [string]$Options.InstallPath } else { $null }
+    $resolved = Resolve-AntojitInstallPath -InstallPath $requestedInstallPath
+    $installation = Get-AntojitInstallation -InstallPath $resolved
+    $Options.InstallPath = [string]$installation.Root
+    if (-not $Options.ContainsKey('SourcePath') -or [string]::IsNullOrWhiteSpace([string]$Options.SourcePath)) {
+        $source = [IO.Path]::GetFullPath($script:AntojitEntryRoot).TrimEnd('\', '/')
+        $destination = [IO.Path]::GetFullPath($installation.Root).TrimEnd('\', '/')
+        $explicitGit = $Options.ContainsKey('RepositoryUrl') -and -not [string]::IsNullOrWhiteSpace([string]$Options.RepositoryUrl)
+        $completeProject = $true
+        foreach ($relative in @('package.json', 'Containerfile', 'compose.pilot.yaml', 'scripts/pilot.mjs')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $source $relative) -PathType Leaf)) { $completeProject = $false; break }
+        }
+        if (-not $explicitGit -and $completeProject -and -not [string]::Equals($source, $destination, [StringComparison]::OrdinalIgnoreCase)) {
+            $Options.SourcePath = $source
+        }
+    }
+    if ($Options.ContainsKey('SourcePath') -and -not [string]::IsNullOrWhiteSpace([string]$Options.SourcePath)) {
+        Write-Host "Carpeta nueva que se instalara: $($Options.SourcePath)"
+        Write-Host "Instalacion que se actualizara: $($installation.Root)"
+    } elseif ($installation.PSObject.Properties['SourceMode'] -and $installation.SourceMode -eq 'folder') {
+        throw 'Esta instalacion se actualiza desde un ZIP nuevo. Descarga y extrae el proyecto completo fuera de la instalacion, y abre ACTUALIZAR-APP.cmd en esa carpeta.'
+    } elseif (-not $Options.ContainsKey('RepositoryUrl')) {
+        $url = Read-Host 'URL de GitHub (Enter para usar la ya guardada)'
+        if ($url.Trim()) { $Options.RepositoryUrl = $url.Trim() }
+    }
+    if (-not $Options.ContainsKey('PrinterQueue') -or [string]::IsNullOrWhiteSpace([string]$Options.PrinterQueue)) {
+        $printing = Get-AntojitPrintConfiguration -Installation $installation
+        if ($printing.Mode -ne 'native') {
+            $queue = Read-AntojitUsbPrinterQueue
+            if ($queue) { $Options.PrinterQueue = $queue }
+        }
+    }
+    if (-not $Options.ConfirmMaintenance) {
+        Write-Host 'Cierra caja y sal de todas las terminales antes de actualizar. Se respaldaran los datos.'
+        $answer = Read-Host 'Escribe ACTUALIZAR para instalar esta version; Enter cancela'
+        if ($answer -cne 'ACTUALIZAR') {
+            Write-Host 'Actualizacion cancelada. La aplicacion continua con su version actual.'
+            return $false
+        }
+        $Options.ConfirmMaintenance = $true
+    }
+    return $true
+}
+
 function Invoke-AntojitWorkflow {
     param([Parameter(Mandatory)][string]$Action, [Parameter(Mandatory)][hashtable]$Options)
     $arguments = @{ Managed = $true }
@@ -136,7 +203,7 @@ function Invoke-AntojitWorkflow {
     switch ($Action) {
         'Install' {
             $file = '01-instalar.ps1'
-            $names += @('RepositoryUrl', 'Branch', 'HttpPort', 'InternalHttpPort', 'PrinterHost', 'PrinterPort', 'AutoStartMode')
+            $names += @('RepositoryUrl', 'Branch', 'HttpPort', 'InternalHttpPort', 'PrinterHost', 'PrinterPort', 'PrinterQueue', 'AutoStartMode')
         }
         'Start' { $file = '02-iniciar.ps1' }
         'AutoStart' {
@@ -146,7 +213,7 @@ function Invoke-AntojitWorkflow {
         }
         'Update' {
             $file = '03-actualizar.ps1'
-            $names += @('RepositoryUrl', 'Branch', 'ConfirmMaintenance')
+            $names += @('RepositoryUrl', 'Branch', 'SourcePath', 'PrinterQueue', 'ConfirmMaintenance')
         }
         default { throw "Operacion no valida: $Action" }
     }
@@ -216,6 +283,8 @@ function Invoke-AntojitFinalMain {
             Get-Content -LiteralPath $transcript -Tail 80 | Out-Host
         } else {
             Import-Module (Join-Path $script:AntojitEntryRoot 'scripts\windows\AntojitOS.Windows.psm1') -Force -DisableNameChecking
+            Import-Module (Join-Path $script:AntojitEntryRoot 'scripts\windows\AntojitOS.Printing.psm1') -Force -DisableNameChecking
+            Import-Module (Join-Path $script:AntojitEntryRoot 'scripts\windows\AntojitOS.Update.psm1') -Force -DisableNameChecking
             Start-AntojitLog -Path $env:ANTOJITOS_SESSION_LOG_PATH
             $selected = $Options.Action
             $fromMenu = $selected -eq 'Menu'
@@ -227,20 +296,13 @@ function Invoke-AntojitFinalMain {
                     $Options.AutoStartMode = Read-AntojitAutoStartMode
                 }
                 if ($fromMenu -and $selected -eq 'AutoStart') { $Options.ForceRegister = $true }
-                if ($fromMenu -and $selected -eq 'Update') {
-                    if (-not $Options.ContainsKey('RepositoryUrl')) {
-                        $url = Read-Host 'URL de GitHub (Enter para usar la ya guardada)'
-                        if ($url.Trim()) { $Options.RepositoryUrl = $url.Trim() }
-                    }
-                    if (-not $Options.ConfirmMaintenance) {
-                        Write-Host 'La actualizacion puede detener el servicio. Cierra caja y sal de las terminales.'
-                        $answer = Read-Host 'Escribe ACTUALIZAR para desplegar; Enter solo comprueba si hay cambios'
-                        $Options.ConfirmMaintenance = $answer -ceq 'ACTUALIZAR'
-                    }
-                }
+                $runWorkflow = $true
+                if ($selected -eq 'Update') { $runWorkflow = Set-AntojitUpdateOptions -Options $Options }
                 Write-AntojitLog "Operacion: $selected"
-                Invoke-AntojitWorkflow -Action $selected -Options $Options
-                Write-AntojitLog 'Operacion completada correctamente.'
+                if ($runWorkflow) {
+                    Invoke-AntojitWorkflow -Action $selected -Options $Options
+                    Write-AntojitLog 'Operacion completada correctamente.'
+                }
             }
         }
     } catch {

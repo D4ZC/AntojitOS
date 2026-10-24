@@ -2,6 +2,7 @@
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..\AntojitOS.Windows.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot '..\AntojitOS.Printing.psm1') -Force -DisableNameChecking
     # These guards also exist when the suite runs on macOS PowerShell 7.
     function Get-ScheduledTask { param($TaskName) throw 'Task Scheduler must be mocked.' }
     function Register-ScheduledTask {
@@ -9,7 +10,7 @@ BeforeAll {
         param($TaskName, $Action, $Trigger, $Settings, $Principal, $User, $Password, $RunLevel, [switch]$Force)
         throw 'Task Scheduler must be mocked.'
     }
-    function Set-ScheduledTask { param($TaskName, $Action) throw 'Task Scheduler must be mocked.' }
+    function Set-ScheduledTask { param($TaskName, $Action, $Settings) throw 'Task Scheduler must be mocked.' }
     function New-ScheduledTaskAction {
         param($Execute, $Argument, $WorkingDirectory)
         throw 'Task Scheduler must be mocked.'
@@ -130,6 +131,31 @@ Describe 'Daily startup entry point' {
         Should -Invoke Update-AntojitNetwork -Times 0 -Exactly
     }
 
+    It 'starts the native USB agent only after the public application is ready' {
+        $global:AntojitStartupOrder = New-Object 'System.Collections.Generic.List[string]'
+        Mock Get-AntojitPrintConfiguration { [pscustomobject]@{ Mode = 'native' } }
+        Mock Invoke-AntojitPilot { $global:AntojitStartupOrder.Add('containers') }
+        Mock Update-AntojitNetwork { $global:AntojitStartupOrder.Add('network') }
+        Mock Invoke-RestMethod {
+            $global:AntojitStartupOrder.Add('health')
+            [pscustomobject]@{ status = 'ready'; database = 'connected' }
+        }
+        Mock Start-AntojitNativePrintAgent { $global:AntojitStartupOrder.Add('usb') }
+        try {
+            & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -Managed
+            ($global:AntojitStartupOrder -join '|') | Should -Be 'containers|network|health|usb'
+            Should -Invoke Start-AntojitNativePrintAgent -Times 1 -Exactly
+        } finally { Remove-Variable AntojitStartupOrder -Scope Global -ErrorAction SilentlyContinue }
+    }
+
+    It 'does not start native printing when the public application is not healthy' {
+        Mock Get-AntojitPrintConfiguration { [pscustomobject]@{ Mode = 'native' } }
+        Mock Invoke-RestMethod { [pscustomobject]@{ status = 'starting'; database = 'connected' } }
+        Mock Start-AntojitNativePrintAgent { }
+        { & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -Managed } | Should -Throw '*direccion publica*'
+        Should -Invoke Start-AntojitNativePrintAgent -Times 0 -Exactly
+    }
+
     It 'returns control to the unified launcher on success and throws the original failure in managed mode' {
         & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -Managed
         Should -Invoke Invoke-AntojitPilot -Times 1 -Exactly -ParameterFilter { $Command -eq 'start' }
@@ -191,6 +217,22 @@ Describe 'Daily startup entry point' {
         Should -Invoke Get-Credential -Times 0 -Exactly
         Should -Invoke Save-AntojitInstallation -Times 0 -Exactly
         Should -Invoke Invoke-AntojitPilot -Times 1 -Exactly -ParameterFilter { $Command -eq 'start' }
+    }
+
+    It 'removes the old startup time limit without replacing stored task credentials' {
+        Mock Get-ScheduledTask {
+            $task = New-StartupTaskFixture -Root $global:AntojitStartupTestInstallation.Root -OwnerSid $global:AntojitStartupTestInstallation.OwnerSid
+            $task | Add-Member -NotePropertyName Settings -NotePropertyValue ([pscustomobject]@{ ExecutionTimeLimit = 'PT15M'; StartWhenAvailable = $true })
+            return $task
+        }
+        Mock Set-ScheduledTask { }
+        & (Join-Path $PSScriptRoot '..\02-iniciar.ps1') -InstallPath $TestDrive -RegisterAutoStart -AutoStartMode Startup
+        $LASTEXITCODE | Should -Be 0
+        Should -Invoke Set-ScheduledTask -Times 1 -Exactly -ParameterFilter {
+            $TaskName -eq 'AntojitOS-Inicio' -and $Settings.ExecutionTimeLimit -eq 'PT0S' -and $Settings.StartWhenAvailable
+        }
+        Should -Invoke Get-Credential -Times 0 -Exactly
+        Should -Invoke Register-ScheduledTask -Times 0 -Exactly
     }
 
     It 'migrates a compatible legacy task action while preserving its stored credentials and trigger' {

@@ -9,7 +9,7 @@ Conservar **la carpeta completa del proyecto**: `final_script.cmd`, `final_scrip
 | **1. Instalar / completar configuración** | Instala dependencias, configura la aplicación, prepara los datos nuevos, registra el arranque automático e inicia el servicio. |
 | **2. Iniciar la aplicación instalada** | Inicia las imágenes y los datos existentes. |
 | **3. Configurar / reparar el arranque automático** | Selecciona inicio al encender o al entrar al escritorio y registra la tarea. |
-| **4. Actualizar desde GitHub** | Pide la URL si hace falta y la confirmación de mantenimiento antes de desplegar. |
+| **4. Actualizar aplicación** | Desde un proyecto extraído, aplica esa carpeta a la instalación existente después de confirmar el mantenimiento. También conserva el flujo Git explícito. |
 | **5. Abrir la carpeta de logs** | Abre la carpeta que contiene los registros de las ejecuciones. |
 | **0. Salir** | Termina sin ejecutar una operación. |
 
@@ -27,7 +27,7 @@ El destino predeterminado es `C:\Program Files\AntojitOS`. El código queda prot
 
 `final_script` solicita elevación cuando es necesaria. Usar siempre la **misma cuenta administradora de Windows**: esa cuenta es propietaria de la máquina WSL/Podman y de los datos. Si la elevación cambia de cuenta, el proceso se detiene. Otra cuenta o `SYSTEM` no dan acceso a la misma instalación.
 
-El instalador prepara Node.js 24, Git, Podman, el proveedor Compose y WSL2 cuando faltan. En Windows 10 descarga **Podman 5.8.9**, de la rama compatible con ese sistema; en Windows 11 puede descargar la versión estable actual. **Podman 6 requiere Windows 11**. WSL2 debe usar un runtime actualizado, además de las características opcionales de Windows. PostgreSQL 17, la API, la interfaz y el agente de impresión se ejecutan en contenedores. No es necesario instalar PostgreSQL manualmente.
+El instalador prepara Node.js 24, Git, Podman, el proveedor Compose y WSL2 cuando faltan. En Windows 10 descarga **Podman 5.8.9**, de la rama compatible con ese sistema; en Windows 11 puede descargar la versión estable actual. **Podman 6 requiere Windows 11**. WSL2 debe usar un runtime actualizado, además de las características opcionales de Windows. PostgreSQL 17, la API y la interfaz se ejecutan en contenedores. El agente de impresión usa un contenedor para Ethernet o simulación, y se ejecuta directamente en Windows para acceder a una impresora USB. No es necesario instalar PostgreSQL manualmente.
 
 La guía oficial de [Podman 5.8.9 para Windows](https://github.com/podman-container-tools/podman/blob/v5.8.9/docs/tutorials/podman-for-windows.md#prerequisites) contempla Windows 10 y Windows 11 con WSL2. El mínimo de Windows 10 del instalador de AntojitOS es 22H2, aunque esa guía permita versiones anteriores.
 
@@ -63,19 +63,21 @@ Para escoger una carpeta dentro de `Program Files`, los puertos y una impresora 
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\final_script.ps1 -Action Install -InstallPath "C:\Program Files\AntojitOS" -HttpPort 8080 -InternalHttpPort 18080 -PrinterHost 192.168.1.50 -PrinterPort 9100
 ```
 
-Reemplazar la IP por la real. Si no se indica impresora, una instalación nueva usa el simulador. El modelo, los caracteres, el papel y el corte requieren una prueba física.
+Reemplazar la IP por la real. Para una impresora USB ya instalada en Windows, utilizar `-PrinterQueue "BIXOLON SRP-F310"` con su nombre real, en lugar de los parámetros de red. Se prepara el agente nativo para que el arranque de AntojitOS lo inicie automáticamente. Si no se indica impresora, una instalación nueva usa el simulador. El modelo, los caracteres, el papel y el corte requieren una prueba física.
 
 La ubicación y su propietario se registran en `%ProgramData%\AntojitOS\installation-location.json`. Inicio y actualización consultan ese registro cuando se omite `-InstallPath`, incluso si el lanzador se ejecuta desde la carpeta de preparación. Si ya hay una instalación con otra ruta o propietario, revisar la anterior antes de crear otra que comparta máquina y servicios.
 
 En una instalación nueva se puede abrir `C:\Program Files\AntojitOS\final_script.cmd`. Para los siguientes ejemplos de consola, usar como directorio actual esa carpeta o la carpeta completa del proyecto de preparación.
 
-Al reparar una instalación anterior con auxiliares ausentes o distintos, la opción **1** prepara un lanzador protegido en `%ProgramData%\AntojitOS\launcher` y registra su ruta en `installation.LauncherPath`. Así conserva el árbol Git de la aplicación, `.env.pilot` y los datos. Esa copia auxiliar sirve al arranque automático; para instalar o reparar se sigue usando el proyecto completo. Una actualización desde GitHub no renueva ese lanzador externo: para renovarlo, volver a elegir **1** desde el proyecto completo actualizado.
+Al reparar una instalación anterior con auxiliares ausentes o distintos, la opción **1** prepara un lanzador protegido en `%ProgramData%\AntojitOS\launcher` y registra su ruta en `installation.LauncherPath`. Así conserva el árbol Git de la aplicación, `.env.pilot` y los datos. Esa copia auxiliar sirve al arranque automático; para instalar o reparar se sigue usando el proyecto completo. La actualización desde carpeta también renueva los auxiliares de ese lanzador al completar el despliegue y conserva la referencia que usa la tarea de arranque.
 
-### Instalar antes de conocer la URL de GitHub
+### Instalaciones desde ZIP y Git
 
 Se puede instalar desde una copia o ZIP sin proporcionar una URL. El instalador crea un repositorio local con la rama `antojitos-local-installation` y registra el origen como `snapshot`. Esa rama conserva una referencia de los archivos instalados.
 
-Cuando se tenga la URL, proporcionarla en la opción **4** o con `-Action Update -RepositoryUrl ...`. La primera actualización adopta la rama de GitHub conservando la rama local inicial y los datos. Después se aceptan únicamente avances `fast-forward` de la rama adoptada. No se toma automáticamente la URL del remoto `origin` ni se presupone un repositorio de GitHub.
+Para actualizar esa instalación basta descargar un ZIP nuevo, extraerlo y ejecutar el procedimiento de la sección **3**. No es necesario configurar Git ni proporcionar una URL en la PC de caja. Se conserva cualquier directorio `.git` existente, pero la actualización por carpeta no ejecuta `fetch`, `merge` ni cambia su historia. Las siguientes actualizaciones de una instalación actualizada por carpeta deben utilizar también una carpeta nueva del proyecto.
+
+El flujo Git sigue disponible para instalaciones que lo utilizan y aún no se han actualizado por carpeta. Con `-Action Update -RepositoryUrl ...`, la primera actualización de una instantánea adopta la rama de GitHub conservando la rama local inicial y los datos. Después se aceptan únicamente avances `fast-forward` de la rama adoptada. No se toma automáticamente la URL del remoto `origin`.
 
 Si se conoce la URL durante la instalación, también se pueden usar `-RepositoryUrl` y `-Branch` con `-Action Install`. Se admiten URLs HTTPS de GitHub y SSH con formato `git@github.com:propietario/repositorio.git`. Un repositorio privado requiere autenticación de Git configurada en la cuenta propietaria; no escribir tokens ni credenciales dentro de la URL.
 
@@ -121,9 +123,46 @@ Las terminales necesitan un navegador actualizado y acceso a la PC por la red lo
 
 El piloto usa HTTP en la red local. El instalador no configura HTTPS; las funciones de instalación y uso de la PWA que requieran un contexto seguro desde otras computadoras necesitan una configuración adicional.
 
-Antes de abrir el turno, comprobar acceso desde otra terminal y realizar una comanda e impresión de prueba. La impresión actual corresponde a ESC/POS por red; una impresora únicamente USB requiere integración adicional.
+Antes de abrir el turno, comprobar acceso desde otra terminal y realizar una comanda e impresión de prueba. Se admite ESC/POS por red y una impresora USB mediante su cola de Windows y un agente nativo en la PC de caja; consultar [BIXOLON_SRP_F310.md](../phase-3/BIXOLON_SRP_F310.md).
 
-## 3. Actualizar desde GitHub
+## 3. Actualizar desde un ZIP
+
+Descargar el ZIP de la rama `main` del repositorio y **extraerlo por completo en una carpeta nueva**, por ejemplo `Descargas\AntojitOS-main`. Conservar la instalación en `C:\Program Files\AntojitOS`: no extraer encima ni copiar manualmente los archivos sobre ella.
+
+Programar una ventana de mantenimiento. Cerrar las cuentas abiertas y el turno de caja, salir de todas las terminales y comprobar que nadie utilizará la aplicación durante la actualización. La aplicación debe estar iniciada y responder correctamente, salvo al recuperar un despliegue pendiente.
+
+1. Con la misma cuenta propietaria de la instalación, abrir **`ACTUALIZAR-APP.cmd`** de la carpeta recién extraída. También se puede abrir su `final_script.cmd` y elegir **4**.
+2. Revisar las carpetas de origen e instalación. Si se ofrece activar una impresora USB, elegir su cola instalada en Windows o escribir su nombre exacto, siguiendo la [guía de la Bixolon](../phase-3/BIXOLON_SRP_F310.md). Enter conserva la configuración actual.
+3. Escribir **ACTUALIZAR** cuando se solicite el mantenimiento y mantener abierta la ventana hasta que termine.
+4. Comprobar las terminales, iniciar sesión y realizar una comanda e impresión de prueba antes de reabrir el turno.
+
+El lanzador de la carpeta nueva reconoce la instalación registrada y usa los archivos extraídos como origen. No necesita descargar la rama con Git ni autenticar un repositorio privado desde la PC de caja. La construcción puede necesitar Internet para obtener imágenes y dependencias que todavía no estén en caché.
+
+Desde PowerShell, usar el lanzador nuevo y señalar explícitamente la carpeta extraída:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\final_script.ps1 -Action Update -SourcePath "C:\Users\CAJA\Downloads\AntojitOS-main" -ConfirmMaintenance
+```
+
+Reemplazar la ruta por la real. `-InstallPath` es opcional: si se omite, se consulta la instalación registrada. Para activar USB desde la consola se puede agregar `-PrinterQueue "BIXOLON SRP-F310"`, usando el nombre real; al omitirlo se conserva la configuración existente. Ejecutar desde la carpeta nueva permite usar las correcciones del actualizador incluso cuando la instalación conserva auxiliares anteriores.
+
+El proceso valida el proyecto y conserva una copia de sus fuentes identificada mediante SHA-256 en `var/windows/update-source/`. Construye las imágenes antes de reemplazar el código instalado y conserva un respaldo del código anterior y de la configuración. Al aplicar el programa, retira los archivos de código gestionados que ya no existen en el origen; conserva `.git`, los archivos `.env` reales, `var/`, `backups/` y los datos de los volúmenes.
+
+Después detiene la interfaz, API y agente de impresión para impedir escrituras, crea un respaldo PostgreSQL y prueba su restauración en una base temporal. Conserva los respaldos en `backups/windows-update-FECHA-ID/`. Sólo entonces inicia las nuevas imágenes: la API aplica las migraciones incluidas en el proyecto. El proceso no ejecuta la carga inicial ni restaura la base automáticamente.
+
+Si falla, conservar los registros y seguir **Recuperación y respaldos**. No borrar el estado pendiente ni sustituir el origen por otro ZIP para intentar ocultar el error.
+
+### Actualización mediante Git
+
+Para una instalación que conserva el flujo Git, proporcionar explícitamente su URL y confirmar el mantenimiento:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\final_script.ps1 -Action Update -RepositoryUrl https://github.com/PROPIETARIO/REPOSITORIO.git -ConfirmMaintenance
+```
+
+Este flujo requiere Git limpio, rama activa compatible y un avance `fast-forward`. Rechaza cambios locales, archivos sin seguimiento, historias divergentes y rutas locales protegidas versionadas. No reemplaza `origin` ni fuerza la historia con `reset`, `stash` o `clean`. No usarlo después de actualizar mediante carpeta: conservar el procedimiento ZIP para las siguientes versiones.
+
+### Reparación de una pantalla KDS anterior
 
 Si `/?mode=kds` conserva la URL pero muestra «Selecciona una mesa», la pantalla
 servida no corresponde a la entrada KDS actual. Reparar el arranque con la opción
@@ -138,7 +177,7 @@ imagen local sin descargar dependencias, conserva la imagen anterior y recrea
 intenta restaurar la imagen anterior. PostgreSQL, API e impresión siguen activos.
 La imagen actualizada conserva la etiqueta que usa Compose en el próximo inicio.
 El registro queda en `var/windows/logs/repair-kds.log` y la referencia de respaldo
-en `var/windows/web-repair.json`. Una futura actualización normal desde GitHub
+en `var/windows/web-repair.json`. Una futura actualización completa
 vuelve a construir la aplicación desde el código de la versión elegida.
 
 Al finalizar abre `/recuperar-cocina.html?v=...`, que retira el service worker
@@ -146,37 +185,6 @@ anterior y solamente las cachés `antojit-os-shell-*`, conservando `localStorage
 PIN y terminales registradas. Después entra en `/kds/`; también sigue admitiéndose
 `/?mode=kds`. La nueva caché consulta primero el servidor al abrir una pantalla y
 reserva el HTML guardado para cuando no hay conexión.
-
-Programar una ventana de mantenimiento. Cerrar las cuentas abiertas y el turno de caja, salir de todas las terminales y comprobar que nadie utilizará la aplicación durante la actualización. Antes de una actualización normal, la aplicación debe estar iniciada y responder correctamente.
-
-Abrir `final_script.cmd`, opción **4**. Escribir la URL real cuando se tenga; Enter reutiliza la que ya quedó guardada. Escribir **ACTUALIZAR** para confirmar el mantenimiento y desplegar. Enter en esa confirmación sólo comprueba y descarga los cambios disponibles, sin desplegarlos.
-
-Desde PowerShell, la primera actualización:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\final_script.ps1 -Action Update -RepositoryUrl https://github.com/PROPIETARIO/REPOSITORIO.git -ConfirmMaintenance
-```
-
-Reemplazar el ejemplo por la URL que proporcione el propietario. En una instalación desde ZIP, omitir `-Branch` consulta la rama predeterminada anunciada por GitHub. En una instalación Git se usa la rama registrada o la activa, y debe coincidir con ella.
-
-Después de una actualización correcta, la URL y la rama quedan registradas:
-
-```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\final_script.ps1 -Action Update -ConfirmMaintenance
-```
-
-Sin `-ConfirmMaintenance`, si no hay commits nuevos termina sin detener servicios. Si hay cambios, informa que debe repetirse la operación con mantenimiento antes de desplegar. No se programan actualizaciones automáticas.
-
-El proceso de actualización:
-
-1. Comprueba que Git no tenga cambios locales, archivos sin seguimiento o una rama desacoplada. Rechaza historias divergentes y versiones que intenten versionar `.env`, `.env.pilot`, `var/` o `backups/`.
-2. Descarga la rama y comprueba el avance. No reemplaza `origin` ni fuerza la historia con `reset`, `stash` o `clean`.
-3. Copia `.env.pilot` a un directorio protegido y registra el intento. Avanza el código y construye las imágenes una por una mientras los contenedores anteriores siguen disponibles.
-4. Detiene interfaz, agente de impresión y API para impedir escrituras. PostgreSQL permanece iniciado.
-5. Crea y valida un respaldo PostgreSQL y prueba su restauración en una base temporal. Conserva `.dump`, manifiesto y configuración en `backups/windows-update-FECHA-ID/`.
-6. Inicia los servicios con las imágenes construidas, aplica migraciones al arrancar la API y verifica disponibilidad. No vuelve a ejecutar la carga inicial ni reemplaza secretos o volúmenes.
-
-Comprobar las terminales, iniciar sesión y realizar una comanda e impresión de prueba antes de reabrir el turno.
 
 ## Registros y ventanas de diagnóstico
 
@@ -230,13 +238,15 @@ La recuperación del auxiliar utiliza el protocolo de argumentos de Podman y deb
 
 ## Recuperación y respaldos
 
-La configuración de la instalación está en `var/windows/installation.json`. Si una actualización falla antes del despliegue, los contenedores anteriores se mantienen; si ya se habían detenido para respaldar, se intenta iniciarlos de nuevo. El código local puede haber avanzado aunque los contenedores sigan ejecutando la versión anterior.
+La configuración de la instalación está en `var/windows/installation.json`. Si una actualización falla antes de iniciar las nuevas migraciones, los contenedores anteriores se mantienen; si ya se habían detenido para respaldar, se intenta iniciarlos de nuevo. El flujo ZIP construye primero desde una copia separada y, si falla después de copiar código pero antes de las migraciones, intenta reponer el código y la configuración anteriores. En el flujo Git el código local puede haber avanzado aunque los contenedores sigan ejecutando la versión anterior.
 
-`var/windows/update-pending.json` conserva ese estado para que otro intento de **Actualizar** despliegue el commit pendiente aunque Git ya no tenga cambios nuevos. Instalación y arranque diario se detienen mientras exista ese estado, para no activar imágenes parcialmente construidas sin completar respaldo y despliegue. No borrar el archivo para ocultar un fallo.
+`var/windows/update-pending.json` conserva ese estado para que otro intento de **Actualizar** complete el despliegue pendiente. Instalación y arranque diario se detienen mientras exista ese estado, para no activar imágenes parcialmente construidas sin completar respaldo y despliegue. No borrar el archivo para ocultar un fallo.
 
-Si falla después de iniciar la nueva API, algunas migraciones pueden haberse aplicado. El proceso intenta detener los servicios de escritura y conserva los respaldos. Revisar error y estado de la base antes de reintentar la actualización con mantenimiento confirmado. Ese intento prepara solamente PostgreSQL para respaldar el estado actual antes de iniciar otra vez la API. Si GitHub ya apunta a otro commit, se rechaza adoptar esa nueva versión hasta resolver el intento pendiente.
+Si falla después de iniciar la nueva API, algunas migraciones pueden haberse aplicado. El proceso intenta detener los servicios de escritura y conserva los respaldos. Revisar error y estado de la base antes de reintentar la actualización con mantenimiento confirmado. Ese intento prepara solamente PostgreSQL para respaldar el estado actual antes de iniciar otra vez la API.
 
-No se restaura la base ni se retrocede el código automáticamente. Si el fallo no se resuelve, seguir [CONTINGENCIA.md](CONTINGENCIA.md) y planear una recuperación coherente de código, configuración y base.
+Para una actualización desde carpeta, el estado pendiente identifica las fuentes congeladas y su hash. Reintentar esa misma versión: después de un posible cambio del esquema se rechaza sustituirla por fuentes distintas. Conservar la carpeta `var/windows/update-source/` y el respaldo del código anterior. Para un despliegue Git pendiente se conserva el commit objetivo; si GitHub ya apunta a otro, se debe resolver el intento anterior antes de adoptar esa nueva versión o cambiar al procedimiento ZIP.
+
+Después de iniciar las nuevas migraciones no se restaura la base ni se retrocede el código automáticamente. Si el fallo no se resuelve, seguir [CONTINGENCIA.md](CONTINGENCIA.md) y planear una recuperación coherente de código, configuración y base.
 
 Los respaldos contienen información del negocio y la copia de `.env.pilot` contiene secretos. Sus carpetas quedan restringidas al propietario, administradores y `SYSTEM`; modificar el código instalado requiere una sesión elevada. Conservar una copia segura en otra unidad: un respaldo en el mismo disco no protege ante una falla de la PC. Los respaldos de actualización tampoco reemplazan los respaldos diarios después del cierre; el procedimiento general está en [EJECUCION_PILOTO.md](EJECUCION_PILOTO.md).
 

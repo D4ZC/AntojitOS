@@ -45,11 +45,16 @@ const credentials = async (): Promise<AgentCredentials> => {
 
 const api = new ProductionAgentApi(config.apiUrl, await credentials());
 let stopping = false;
+// Windows cannot deliver SIGTERM to a detached Node process. The updater
+// requests a graceful stop through this local file and waits for process exit;
+// the current print and acknowledgement finish before another claim begins.
+const stopFile = process.env.PRINT_AGENT_STOP_FILE;
 process.once("SIGINT", () => { stopping = true; });
 process.once("SIGTERM", () => { stopping = true; });
 
 console.info(`Agente de impresión activo en modo ${config.mode}`);
 while (!stopping) {
+  if (stopFile && existsSync(stopFile)) break;
   try {
     const { job } = await api.claim();
     if (!job) {

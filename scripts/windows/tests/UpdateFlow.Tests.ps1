@@ -2,6 +2,8 @@
 
 BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '..\AntojitOS.Windows.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot '..\AntojitOS.Printing.psm1') -Force
+    Import-Module (Join-Path $PSScriptRoot '..\AntojitOS.Update.psm1') -Force
 }
 
 Describe 'Update maintenance and data preservation' {
@@ -66,6 +68,35 @@ Describe 'Update maintenance and data preservation' {
             AntojitUpdateTestCurrent, AntojitUpdateTestCandidate -Scope Global -ErrorAction SilentlyContinue
     }
 
+    It 'delegates a ZIP folder update before consulting Git or taking a second lock' {
+        Mock Invoke-AntojitFolderUpdate { }
+        $source = Join-Path $TestDrive 'fresh extracted ZIP'
+        & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root -SourcePath $source -PrinterQueue 'USB Caja' -ConfirmMaintenance -Managed
+        Should -Invoke Invoke-AntojitFolderUpdate -Times 1 -Exactly -ParameterFilter {
+            $SourcePath -eq $source -and $InstallPath -eq $global:AntojitUpdateTestInstallation.Root -and $ConfirmMaintenance -and $PrinterQueue -eq 'USB Caja'
+        }
+        Should -Invoke Get-AntojitGit -Times 0 -Exactly
+        Should -Invoke Enter-AntojitOperation -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCommand -Times 0 -Exactly
+    }
+
+    It 'does not hide a managed ZIP updater error behind the Git path' {
+        Mock Invoke-AntojitFolderUpdate { throw 'Fixture local ZIP manifest mismatch.' }
+        { & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -SourcePath (Join-Path $TestDrive 'fresh ZIP') -Managed } |
+            Should -Throw '*Fixture local ZIP manifest mismatch*'
+        Should -Invoke Get-AntojitGit -Times 0 -Exactly
+        Should -Invoke Enter-AntojitOperation -Times 0 -Exactly
+    }
+
+    It 'rejects Git updates for an installation maintained from a ZIP folder' {
+        $global:AntojitUpdateTestInstallation.SourceMode = 'folder'
+        & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root -ConfirmMaintenance 2>$null
+        $LASTEXITCODE | Should -Be 1
+        Should -Invoke Get-AntojitGit -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCommand -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCompose -Times 0 -Exactly
+    }
+
     It 'leaves services running when GitHub has no newer commit' {
         $global:AntojitUpdateTestCandidate = $global:AntojitUpdateTestCurrent
         & (Join-Path $PSScriptRoot '..\03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root 2>$null
@@ -92,6 +123,38 @@ Describe 'Update maintenance and data preservation' {
         Should -Invoke Invoke-AntojitCompose -Times 0 -Exactly
         Should -Invoke Initialize-AntojitRuntime -Times 0 -Exactly
         Test-Path -LiteralPath (Join-Path $global:AntojitUpdateTestInstallation.StateDirectory 'update-pending.json') | Should -BeFalse
+    }
+
+    It 'restores simulator configuration when first-time USB activation fails before migrations' -Skip:($env:OS -ne 'Windows_NT') {
+        $pilotPath = Join-Path $global:AntojitUpdateTestInstallation.Root '.env.pilot'
+        $nativePath = Join-Path $global:AntojitUpdateTestInstallation.Root '.env.print-agent'
+        $before = [IO.File]::ReadAllText($pilotPath)
+        Mock Invoke-AntojitCompose { }
+        Mock Get-AntojitPrintConfiguration {
+            $mode = if (Test-Path -LiteralPath (Join-Path $global:AntojitUpdateTestInstallation.Root '.env.print-agent')) { 'native' } else { 'container' }
+            [pscustomobject]@{ Mode = $mode; ActivePath = (Join-Path $global:AntojitUpdateTestInstallation.StateDirectory 'print-agent/active.json') }
+        }
+        Mock Initialize-AntojitPrintConfiguration {
+            [IO.File]::AppendAllText((Join-Path $global:AntojitUpdateTestInstallation.Root '.env.pilot'), "`nPRINT_AGENT_RUNTIME=native`n")
+            [IO.File]::WriteAllText((Join-Path $global:AntojitUpdateTestInstallation.Root '.env.print-agent'), 'PRINT_AGENT_MODE=system')
+            Get-AntojitPrintConfiguration -Installation $global:AntojitUpdateTestInstallation
+        }
+        Mock Assert-AntojitNativePrintConfiguration { }
+        Mock Prepare-AntojitNativePrintAgent { 'prepared-native-runtime' }
+        Mock Stop-AntojitNativePrintAgent { }
+        Mock Start-AntojitNativePrintAgent { throw 'A new USB runtime must not start against the previous API.' }
+        Mock Invoke-AntojitPilot {
+            param($Root, $Command)
+            if ($Command -eq 'backup') { throw 'Fixture backup failed before migrations.' }
+            if ($Command -ne 'verify') { throw "Unexpected pilot command: $Command" }
+        }
+        & (Join-Path $PSScriptRoot '../03-actualizar.ps1') -InstallPath $global:AntojitUpdateTestInstallation.Root -PrinterQueue 'USB Caja' -ConfirmMaintenance 2>$null
+        $LASTEXITCODE | Should -Be 1
+        [IO.File]::ReadAllText($pilotPath) | Should -BeExactly $before
+        Test-Path -LiteralPath $nativePath | Should -BeFalse
+        Should -Invoke Start-AntojitNativePrintAgent -Times 0 -Exactly
+        Should -Invoke Invoke-AntojitCompose -Times 1 -Exactly -ParameterFilter { $Arguments[0] -eq 'start' -and $Arguments -contains 'print-agent' }
+        Should -Invoke Invoke-AntojitCompose -Times 0 -Exactly -ParameterFilter { $Arguments[0] -eq 'up' }
     }
 
     It 'restarts the previous containers when backup fails and retains recovery state' -Skip:($env:OS -ne 'Windows_NT') {

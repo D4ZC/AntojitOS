@@ -44,7 +44,27 @@ Configurar `PRINTER_QUEUE` con el nombre de la cola, respetando espacios. En Win
 
 El agente en modo `system` debe ejecutarse directamente en el sistema que tiene instalada esa cola. Un contenedor Linux de Podman en Windows/macOS no hereda las colas USB del anfitrión. Cambiar sólo `.env.pilot` a `system` dentro del contenedor no configura acceso a la impresora de Windows.
 
-Crear un archivo local `.env.print-agent` en la raíz del proyecto. Está excluido de Git. Este ejemplo usa la impresora USB de la PC principal de caja para imprimir automáticamente las comandas de Cocina y Barra, además de los recibos y cortes de la caja principal:
+### Windows con el instalador y actualizador
+
+Con la impresora instalada en Windows, abrir `final_script.cmd` de la carpeta nueva extraída del ZIP y elegir **4. Actualizar la app**. La primera vez, seleccionar la cola USB de caja en la lista de impresoras; las actualizaciones siguientes conservan esa configuración. El ZIP actualiza la instalación registrada de AntojitOS; no copiar archivos encima de `Program Files` manualmente.
+
+También se puede indicar la cola por PowerShell desde la carpeta extraída:
+
+```powershell
+.\final_script.ps1 -Action Update -SourcePath $PWD.Path -PrinterQueue 'BIXOLON SRP-F310' -ConfirmMaintenance
+```
+
+Para una instalación nueva usar `-Action Install -PrinterQueue 'BIXOLON SRP-F310'`. El nombre debe coincidir con la cola instalada. El controlador USB se instala previamente; el script no lo descarga.
+
+El instalador y actualizador crean `.env.print-agent` en la instalación, guardan las credenciales en `var/print-agent-usb/credentials.json` y preparan el programa nativo desde la imagen compilada. El código del agente, sus credenciales y los destinos se conservan en las siguientes actualizaciones. Una instalación estándar atiende `KITCHEN,BAR` y la caja `MAIN`; al migrar una configuración existente se respetan su sucursal, destinos y perfil de papel.
+
+El inicio diario y la tarea automática de Windows arrancan el agente USB después de comprobar la aplicación. Se elimina el contenedor `print-agent` para que el simulador no consuma los mismos trabajos; se conserva su volumen de credenciales. El proceso nativo guarda sus registros en `var/windows/print-agent/agent-*.stdout.log` y `agent-*.stderr.log`.
+
+Durante una actualización el agente termina la impresión que tenga en curso antes de detenerse. Si no termina dentro del límite, la actualización se detiene para revisar la cola; no mata ese proceso a la fuerza. Si el agente anterior se inició manualmente en una consola o una tarea propia, cerrar ese arranque anterior una vez y repetir la actualización. No iniciar a la vez el comando manual indicado abajo y el agente administrado.
+
+### Configuración y ejecución manual
+
+Para desarrollo o una instalación que no usa los scripts de Windows, crear un archivo local `.env.print-agent` en la raíz del proyecto. Está excluido de Git. Este ejemplo usa la impresora USB de la PC principal de caja para imprimir automáticamente las comandas de Cocina y Barra, además de los recibos y cortes de la caja principal:
 
 ```dotenv
 PRINT_AGENT_MODE=system
@@ -90,7 +110,7 @@ Iniciar el agente de forma nativa en la PC de caja, desde la raíz del proyecto:
 node --env-file=.env.print-agent apps/print-agent/dist/main.js
 ```
 
-El proceso permanece activo. La computadora y el agente deben estar encendidos para imprimir. El arranque de los contenedores del piloto no inicia este proceso nativo: debe iniciarse también en cada encendido de la PC. La primera ejecución registra su código y guarda una credencial local; conservar ese archivo y el mismo código en reinicios. El token de instalación permite registrar el agente, mientras que la credencial guardada autentica las siguientes ejecuciones. No compartir el archivo de configuración ni las credenciales.
+El proceso permanece activo. La computadora y el agente deben estar encendidos para imprimir. En ejecución manual, iniciar el proceso nativo en cada encendido; las instalaciones administradas de Windows lo hacen con `02-iniciar.ps1` y su tarea de arranque. La primera ejecución registra su código y guarda una credencial local; conservar ese archivo y el mismo código en reinicios. El token de instalación permite registrar el agente, mientras que la credencial guardada autentica las siguientes ejecuciones. No compartir el archivo de configuración ni las credenciales.
 
 ## Simulación y comprobación
 

@@ -19,6 +19,7 @@ param(
     [ValidateRange(1, 65535)][int]$HttpPort = 8080,
     [ValidateRange(1, 65535)][int]$InternalHttpPort = 18080,
     [string]$PrinterHost,
+    [string]$PrinterQueue,
     [ValidateRange(1, 65535)][int]$PrinterPort = 9100,
     [ValidateSet('Startup', 'Logon')][string]$AutoStartMode = 'Startup',
     [switch]$Managed
@@ -50,7 +51,8 @@ function Copy-AntojitSource {
 function Resolve-AntojitLauncher {
     param([string]$SourceRoot, [string]$Root, [string]$BootstrapDirectory, [string]$OwnerSid, $Installation)
     $files = @('final_script.ps1', 'scripts\windows\01-instalar.ps1', 'scripts\windows\02-iniciar.ps1',
-        'scripts\windows\03-actualizar.ps1', 'scripts\windows\AntojitOS.Windows.psm1', 'scripts\windows\AntojitOS.Dependencies.psm1')
+        'scripts\windows\03-actualizar.ps1', 'scripts\windows\AntojitOS.Windows.psm1', 'scripts\windows\AntojitOS.Dependencies.psm1',
+        'scripts\windows\AntojitOS.Printing.psm1', 'scripts\windows\AntojitOS.Update.psm1')
     $needsBundle = $false
     foreach ($file in $files) {
         $sourceFile = Join-Path $SourceRoot $file
@@ -97,12 +99,14 @@ function Resolve-AntojitLauncher {
 
 try {
     Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Printing.psm1') -Force -DisableNameChecking
     Assert-AntojitWindows
     Assert-AntojitAdministrator
     if (-not $PSBoundParameters.ContainsKey('InstallPath') -and (Test-Path -LiteralPath (Join-Path $env:ProgramData 'AntojitOS\installation-location.json'))) {
         $InstallPath = Resolve-AntojitInstallPath
     }
     if ($HttpPort -eq $InternalHttpPort) { throw 'Los puertos publico e interno deben ser diferentes.' }
+    if ($PrinterHost -and $PrinterQueue) { throw 'Configura una impresora por red con PrinterHost o una USB con PrinterQueue; no ambas al mismo tiempo.' }
     if ($RepositoryUrl) { $RepositoryUrl = Test-AntojitRepositoryUrl $RepositoryUrl }
     $root = [IO.Path]::GetFullPath($InstallPath).TrimEnd('\', '/')
     if ($PrinterHost -and [Uri]::CheckHostName($PrinterHost) -eq [UriHostNameType]::Unknown) { throw 'PrinterHost debe ser una IP o un nombre de red valido.' }
@@ -236,9 +240,18 @@ try {
     Set-AntojitEnvironmentValue -Path $environmentFile -Name 'PILOT_HTTP_PORT' -Value ([string]$installation.InternalHttpPort)
     Set-AntojitEnvironmentValue -Path $environmentFile -Name 'PILOT_BIND_ADDRESS' -Value '127.0.0.1'
     if ($PrinterHost) {
+        if ((Get-AntojitPrintConfiguration -Installation $installation).Mode -eq 'native') { throw 'La instalacion ya tiene una impresora USB. Conserva su configuracion al reparar o actualizar.' }
         Set-AntojitEnvironmentValue -Path $environmentFile -Name 'PRINT_AGENT_MODE' -Value 'tcp'
         Set-AntojitEnvironmentValue -Path $environmentFile -Name 'PRINTER_HOST' -Value $PrinterHost
         Set-AntojitEnvironmentValue -Path $environmentFile -Name 'PRINTER_PORT' -Value ([string]$PrinterPort)
+    }
+    $printConfiguration = Initialize-AntojitPrintConfiguration -Installation $installation -PrinterQueue $PrinterQueue
+    Assert-AntojitNativePrintConfiguration -Installation $installation
+    if ($printConfiguration.Mode -eq 'native') {
+        if ($installation.Completed -and -not (Test-Path -LiteralPath $printConfiguration.ActivePath) -and -not (Test-Path -LiteralPath $printConfiguration.PreparedPath)) {
+            throw 'La instalacion existente necesita actualizar el agente USB. Usa Actualizar desde carpeta ZIP antes de iniciar la impresora con el nuevo administrador.'
+        }
+        Stop-AntojitNativePrintAgent -Installation $installation
     }
     $backupDirectory = Join-Path $root 'backups'
     New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
@@ -252,7 +265,7 @@ try {
         # repository without discarding locally edited files or its old source.
         $head = & $tools.GitPath -C $root rev-parse --verify --quiet HEAD
         if ($LASTEXITCODE -ne 0) {
-            foreach ($localPath in @('.env.pilot', 'var/windows/installation.json', 'backups/')) {
+            foreach ($localPath in @('.env.pilot', '.env.print-agent', 'var/windows/installation.json', 'backups/')) {
                 Invoke-AntojitCommand -FilePath $tools.GitPath -Arguments @('-C', $root, 'check-ignore', '-q', '--', $localPath)
             }
             Invoke-AntojitCommand -FilePath $tools.GitPath -Arguments @('-C', $root, 'add', '--all')
@@ -267,6 +280,7 @@ try {
         Write-AntojitLog 'Construyendo e iniciando la aplicacion. La primera instalacion puede tardar varios minutos.'
         Invoke-AntojitPilot -Root $root -Command 'up'
         Invoke-AntojitPilot -Root $root -Command 'ensure-seeded'
+        if ($printConfiguration.Mode -eq 'native') { $null = Prepare-AntojitNativePrintAgent -Installation $installation -SourceRoot $root }
     }
     Update-AntojitNetwork -Installation $installation
     Invoke-AntojitPilot -Root $root -Command 'verify'

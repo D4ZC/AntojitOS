@@ -1,7 +1,7 @@
 #requires -Version 5.1
 <#
 .SYNOPSIS
-Descarga e instala una actualizacion de AntojitOS desde GitHub.
+Actualiza AntojitOS desde una carpeta ZIP nueva o desde GitHub.
 .DESCRIPTION
 Ejecutar como administrador, con la misma cuenta propietaria de la instalacion.
 Cerrar las cajas y salir de todas las terminales antes de usar -ConfirmMaintenance.
@@ -14,6 +14,10 @@ No ejecuta seed, elimina volumenes, cambia secretos ni restaura datos por su cue
 Un intento fallido deja update-pending.json para permitir reintentar el mismo commit.
 .PARAMETER InstallPath
 Carpeta de la instalacion. Si se omite, usa la ubicacion registrada por el instalador.
+.PARAMETER SourcePath
+Carpeta nueva con el ZIP completo extraido. Actualiza la instalacion registrada sin Git.
+.PARAMETER PrinterQueue
+Nombre exacto de la cola de Windows para activar impresion USB; si se omite conserva la configuracion.
 .PARAMETER RepositoryUrl
 URL HTTPS de github.com/propietario/repositorio o SSH git@github.com:propietario/repositorio.git.
 No admite credenciales, tokens, parametros ni fragmentos en la URL.
@@ -31,6 +35,8 @@ la actualizacion. Solo es necesario cuando existe una actualizacion pendiente.
 [CmdletBinding()]
 param(
     [string]$InstallPath,
+    [string]$SourcePath,
+    [string]$PrinterQueue,
     [string]$RepositoryUrl,
     [string]$Branch,
     [switch]$ConfirmMaintenance,
@@ -96,6 +102,11 @@ function Save-UpdatePending {
 $operationLock = $null
 $installation = $null
 $servicesStopped = $false
+$printConfiguration = $null
+$nativePrintRuntime = $null
+$previousNativeActive = $false
+$printConfigurationChanged = $false
+$hadNativeEnvironment = $false
 $deploymentStarted = $false
 $mayHaveMigrated = $false
 $backupPath = $null
@@ -106,11 +117,21 @@ $exitCode = 0
 
 try {
     Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Windows.psm1') -Force -DisableNameChecking
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Printing.psm1') -Force -DisableNameChecking
+    Import-Module (Join-Path $PSScriptRoot 'AntojitOS.Update.psm1') -Force -DisableNameChecking
+    if (-not [string]::IsNullOrWhiteSpace($SourcePath)) {
+        Invoke-AntojitFolderUpdate -SourcePath $SourcePath -InstallPath $InstallPath -ConfirmMaintenance:$ConfirmMaintenance -PrinterQueue $PrinterQueue
+        if ($Managed) { return }
+        exit 0
+    }
     Assert-AntojitWindows
     Assert-AntojitAdministrator
     $resolvedInstallPath = Resolve-AntojitInstallPath -InstallPath $InstallPath
     $installation = Get-AntojitInstallation -InstallPath $resolvedInstallPath
     Assert-AntojitOwner -Installation $installation
+    if ($installation.PSObject.Properties['SourceMode'] -and $installation.SourceMode -eq 'folder') {
+        throw 'Esta instalacion se actualiza desde carpeta ZIP. Descarga y extrae la version nueva, y abre ACTUALIZAR-APP.cmd dentro de esa carpeta; no uses Git sobre la instalacion.'
+    }
     $script:UpdateRoot = $installation.Root
     $operationLock = Enter-AntojitOperation -Root $installation.Root
     Start-AntojitLog -Path (Join-Path $installation.StateDirectory ('logs\update-' + (Get-Date -Format 'yyyyMMdd-HHmmss-fff') + '.log'))
@@ -185,7 +206,7 @@ try {
         throw "GitHub cambio desde un despliegue que pudo aplicar migraciones. Conserva el commit pendiente $($pending.TargetCommit) y sus respaldos; resuelve esa actualizacion antes de adoptar otra version."
     }
     $treePaths = ((@(Invoke-UpdateGit -GitArguments @('ls-tree', '-r', '-z', '--name-only', $candidate) -Capture) -join "`n").Split([char]0))
-    $protectedPaths = @($treePaths | Where-Object { $_ -match '^(?:\.env|\.env\.pilot|var|backups)(?:/|$)' })
+    $protectedPaths = @($treePaths | Where-Object { $_ -match '^(?:\.env|\.env\.pilot|\.env\.print-agent|var|backups)(?:/|$)' })
     if (($protectedPaths -join '').Trim().Length -gt 0) {
         throw 'La rama de GitHub versiona rutas locales protegidas (.env, .env.pilot, var o backups). Se cancela para conservar configuracion y datos.'
     }
@@ -233,6 +254,16 @@ try {
     $environmentFile = Join-Path $installation.Root '.env.pilot'
     if (-not (Test-Path -LiteralPath $environmentFile -PathType Leaf)) { throw 'Falta .env.pilot; revisa la instalacion antes de actualizar.' }
     Copy-Item -LiteralPath $environmentFile -Destination (Join-Path $backupDirectory '.env.pilot')
+    $nativeEnvironmentFile = Join-Path $installation.Root '.env.print-agent'
+    $hadNativeEnvironment = Test-Path -LiteralPath $nativeEnvironmentFile -PathType Leaf
+    if ($hadNativeEnvironment) {
+        Copy-Item -LiteralPath $nativeEnvironmentFile -Destination (Join-Path $backupDirectory '.env.print-agent')
+    }
+    $originalPrintConfiguration = Get-AntojitPrintConfiguration -Installation $installation
+    $previousNativeActive = $originalPrintConfiguration.Mode -eq 'native' -and (Test-Path -LiteralPath $originalPrintConfiguration.ActivePath -PathType Leaf)
+    $printConfigurationChanged = $true
+    $printConfiguration = Initialize-AntojitPrintConfiguration -Installation $installation -PrinterQueue $PrinterQueue
+    Assert-AntojitNativePrintConfiguration -Installation $installation
     if ($null -eq $pending) {
         $pending = [ordered]@{
             CreatedAt = [DateTime]::UtcNow.ToString('o')
@@ -273,9 +304,12 @@ try {
         Invoke-AntojitCompose -Installation $installation -Arguments @('build', $service)
     }
 
+    $nativePrintRuntime = Prepare-AntojitNativePrintAgent -Installation $installation -SourceRoot $installation.Root
+
     $pending.Stage = 'backing-up'
     Save-UpdatePending -Record $pending -Path $pendingPath
     $previousBackups = @(Get-ChildItem -LiteralPath $allBackups -Filter '*.dump' -File | Select-Object -ExpandProperty FullName)
+    Stop-AntojitNativePrintAgent -Installation $installation
     $servicesStopped = $true
     Invoke-AntojitCompose -Installation $installation -Arguments @('stop', '--timeout', '30', 'web', 'print-agent', 'api')
     Invoke-AntojitPilot -Root $installation.Root -Command 'backup'
@@ -296,9 +330,14 @@ try {
     Write-AntojitLog -Message 'Respaldo verificado. Iniciando la nueva version y sus migraciones.'
     $deploymentStarted = $true
     $mayHaveMigrated = $true
-    Invoke-AntojitCompose -Installation $installation -Arguments @('up', '--detach', '--no-build', '--pull', 'never', 'postgres', 'api', 'web', 'print-agent')
+    $services = @('postgres', 'api', 'web')
+    if ($printConfiguration.Mode -ne 'native') { $services += 'print-agent' }
+    Invoke-AntojitCompose -Installation $installation -Arguments (@('up', '--detach', '--no-build', '--pull', 'never') + $services)
     Update-AntojitNetwork -Installation $installation
     Invoke-AntojitPilot -Root $installation.Root -Command 'verify'
+    if ($printConfiguration.Mode -eq 'native') {
+        Start-AntojitNativePrintAgent -Installation $installation -RuntimeDirectory $nativePrintRuntime
+    }
     $installation.RepositoryUrl = $RepositoryUrl
     $installation.Branch = $Branch
     if ($installation.PSObject.Properties['SourceMode']) { $installation.SourceMode = 'git' }
@@ -318,14 +357,30 @@ catch {
     } else {
         Write-Error -ErrorRecord $updateError -ErrorAction Continue
     }
+    if ($printConfigurationChanged -and -not $mayHaveMigrated) {
+        try {
+            Copy-Item -LiteralPath (Join-Path $backupDirectory '.env.pilot') -Destination (Join-Path $installation.Root '.env.pilot') -Force
+            if ($hadNativeEnvironment) {
+                Copy-Item -LiteralPath (Join-Path $backupDirectory '.env.print-agent') -Destination (Join-Path $installation.Root '.env.print-agent') -Force
+            } else {
+                Remove-Item -LiteralPath (Join-Path $installation.Root '.env.print-agent') -Force -ErrorAction SilentlyContinue
+            }
+            $printConfiguration = Get-AntojitPrintConfiguration -Installation $installation
+        } catch { Write-Warning "No se pudo reponer toda la configuracion anterior. Conserva $backupDirectory y revisa el log antes de abrir caja." }
+    }
     if ($servicesStopped -and -not $mayHaveMigrated) {
         try {
-            Invoke-AntojitCompose -Installation $installation -Arguments @('start', 'api', 'web', 'print-agent')
+            $previousServices = @('api', 'web')
+            if ($null -eq $printConfiguration -or $printConfiguration.Mode -ne 'native') { $previousServices += 'print-agent' }
+            Invoke-AntojitCompose -Installation $installation -Arguments (@('start') + $previousServices)
+            if ($previousNativeActive) { Start-AntojitNativePrintAgent -Installation $installation }
             Write-AntojitLog -Message 'Se reiniciaron los contenedores anteriores. No se iniciaron las nuevas migraciones.'
         } catch {
             Write-Warning 'No se pudieron reiniciar todos los contenedores anteriores. Revisa el estado del motor antes de abrir las terminales.'
         }
     } elseif ($mayHaveMigrated -and ($servicesStopped -or $deploymentStarted)) {
+        try { Stop-AntojitNativePrintAgent -Installation $installation }
+        catch { Write-Warning 'No se pudo confirmar que el agente USB quedara detenido.' }
         try { Invoke-AntojitCompose -Installation $installation -Arguments @('stop', '--timeout', '30', 'web', 'print-agent', 'api') }
         catch { Write-Warning 'No se pudo confirmar que todos los servicios de escritura quedaran detenidos.' }
     }

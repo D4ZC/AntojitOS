@@ -47,8 +47,10 @@ La PWA queda en `http://localhost:8080`; la guía de operación y recuperación 
 
 En una PC nueva con **Windows 10 22H2 x64 (compilación 19045 o posterior)** o **Windows 11 x64**, conservar la carpeta completa del proyecto y abrir
 [`final_script.cmd`](final_script.cmd) con doble clic. Su menú instala y configura el sistema,
-registra el arranque automático, inicia la aplicación y permite actualizar desde GitHub cuando
-se proporcione la URL. La ventana permanece abierta para revisar el resultado y muestra la
+registra el arranque automático, inicia la aplicación y permite aplicar actualizaciones desde
+un ZIP del proyecto. Para actualizar, descargar la rama `main`, extraerla en una carpeta nueva
+y abrir `ACTUALIZAR-APP.cmd`, o su `final_script.cmd` y elegir **4**. Se conserva la instalación,
+la configuración y la base de datos. La ventana permanece abierta para revisar el resultado y muestra la
 carpeta de registros de esa ejecución.
 
 En Windows 10, comprobar la versión con `Win + R`, `winver` y actualizar a 22H2 si hace falta;

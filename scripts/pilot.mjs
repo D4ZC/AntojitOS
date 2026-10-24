@@ -142,7 +142,28 @@ const readPilotEnvironment = () => {
   }
   const environment = parseEnvironmentFile(readFileSync(environmentFile, "utf8"));
   validatePilotEnvironment(environment);
+  // The USB agent belongs to Windows, even when an older .env.pilot still
+  // describes the simulator. Never revive that simulator during a daily start.
+  const nativeEnvironmentFile = join(repositoryRoot, ".env.print-agent");
+  if (existsSync(nativeEnvironmentFile)) {
+    const native = parseEnvironmentFile(readFileSync(nativeEnvironmentFile, "utf8"));
+    if (native.PRINT_AGENT_MODE === "system") environment.PRINT_AGENT_RUNTIME = "native";
+  }
   return environment;
+};
+
+export const usesNativePrintAgent = (environment = {}) =>
+  environment.PRINT_AGENT_RUNTIME === "native" || environment.PRINT_AGENT_MODE === "system";
+
+export const synchronizePilotPrintService = (engine, environment, operations = {}) => {
+  const runCompose = operations.compose ?? compose;
+  if (usesNativePrintAgent(environment)) {
+    // Stopping alone leaves restart: unless-stopped available to another up.
+    // Remove only the container; keep its named credential volume intact.
+    runCompose(engine, "rm", "--stop", "--force", "print-agent");
+  } else {
+    runCompose(engine, "up", "--detach", "--no-build", "--pull", "never", "print-agent");
+  }
 };
 
 const executableExists = (executable) => {
@@ -385,6 +406,9 @@ const restoreBackup = async (engine, environment, path, confirmed) => {
   if (!confirmed) {
     throw new Error("La restauración reemplaza la base activa. Repite con --confirm-restore");
   }
+  if (usesNativePrintAgent(environment)) {
+    throw new Error("pilot:restore no admite la impresión USB administrada: la restauración debe coordinar la parada y el reinicio del agente nativo de Windows");
+  }
   validateArchive(engine, path);
   createBackup(engine, "before-restore");
   compose(engine, "stop", "api", "print-agent");
@@ -428,11 +452,17 @@ const restoreBackup = async (engine, environment, path, confirmed) => {
 export const ensurePilotIsSeeded = (engine, operations = {}) => {
   const isSeeded = operations.isSeeded ?? databaseIsSeeded;
   const runCompose = operations.compose ?? compose;
+  const environment = operations.environment ?? {};
+  if (usesNativePrintAgent(environment)) {
+    synchronizePilotPrintService(engine, environment, { compose: runCompose });
+  }
   const initialized = !isSeeded(engine);
   if (initialized) {
     runCompose(engine, "exec", "-T", "api", "node", "dist/database/seed.js");
   }
-  runCompose(engine, "up", "--detach", "--no-build", "--pull", "never", "print-agent");
+  if (!usesNativePrintAgent(environment)) {
+    synchronizePilotPrintService(engine, environment, { compose: runCompose });
+  }
   return initialized;
 };
 
@@ -440,12 +470,17 @@ export const startPilotServices = async (engine, environment, operations = {}) =
   const runCompose = operations.compose ?? compose;
   const verify = operations.verify ?? verifyRuntime;
   const isSeeded = operations.isSeeded ?? databaseIsSeeded;
+  if (usesNativePrintAgent(environment)) {
+    synchronizePilotPrintService(engine, environment, { compose: runCompose });
+  }
   runCompose(engine, "up", "--detach", "--no-build", "--pull", "never", "postgres", "api", "web");
   await verify(environment);
   if (!isSeeded(engine)) {
     throw new Error("La base no esta inicializada. Ejecuta el instalador antes del inicio diario");
   }
-  runCompose(engine, "up", "--detach", "--no-build", "--pull", "never", "print-agent");
+  if (!usesNativePrintAgent(environment)) {
+    synchronizePilotPrintService(engine, environment, { compose: runCompose });
+  }
 };
 
 const main = async () => {
@@ -468,25 +503,27 @@ const main = async () => {
       await startPilotServices(engine, environment);
       break;
     case "up":
+      if (usesNativePrintAgent(environment)) synchronizePilotPrintService(engine, environment);
       for (const service of ["api", "web", "print-agent"]) {
         compose(engine, "build", service);
       }
       compose(engine, "up", "--detach", "--no-build", "postgres", "api", "web");
       await verifyRuntime(environment);
       if (databaseIsSeeded(engine)) {
-        compose(engine, "up", "--detach", "--no-build", "print-agent");
+        if (!usesNativePrintAgent(environment)) synchronizePilotPrintService(engine, environment);
       } else {
         console.info("Instalación nueva: ejecuta pnpm pilot:seed para activar el agente de impresión");
       }
       break;
     case "seed":
+      if (usesNativePrintAgent(environment)) synchronizePilotPrintService(engine, environment);
       compose(engine, "exec", "-T", "api", "node", "dist/database/seed.js");
-      compose(engine, "up", "--detach", "--no-build", "print-agent");
+      if (!usesNativePrintAgent(environment)) synchronizePilotPrintService(engine, environment);
       console.info("Datos iniciales aplicados");
       break;
     case "ensure-seeded":
       console.info(
-        ensurePilotIsSeeded(engine)
+        ensurePilotIsSeeded(engine, { environment })
           ? "Datos iniciales aplicados en una base nueva"
           : "La base ya contiene una sucursal; se conservaron el catalogo y los PIN existentes",
       );

@@ -7,6 +7,8 @@ import {
   normalizeCommandArguments,
   parseEnvironmentFile,
   startPilotServices,
+  synchronizePilotPrintService,
+  usesNativePrintAgent,
   validatePilotEnvironment,
 } from "./pilot.mjs";
 
@@ -76,6 +78,44 @@ test("el arranque diario no inicializa una base vacia ni inicia impresion", asyn
     isSeeded: () => false,
   }), /no esta inicializada/u);
   assert.equal(calls.length, 1);
+});
+
+test("USB elimina el contenedor competidor antes de iniciar la aplicacion", async () => {
+  const calls = [];
+  await startPilotServices("podman", { PRINT_AGENT_RUNTIME: "native" }, {
+    compose: (...args) => calls.push(args),
+    verify: async () => calls.push(["ready"]),
+    isSeeded: () => true,
+  });
+  assert.deepEqual(calls, [
+    ["podman", "rm", "--stop", "--force", "print-agent"],
+    ["podman", "up", "--detach", "--no-build", "--pull", "never", "postgres", "api", "web"],
+    ["ready"],
+  ]);
+});
+
+test("inicializar una base con USB no inicia el simulador ni borra su volumen", () => {
+  const calls = [];
+  assert.equal(ensurePilotIsSeeded("podman", {
+    environment: { PRINT_AGENT_MODE: "system" },
+    isSeeded: () => false,
+    compose: (...args) => calls.push(args),
+  }), true);
+  assert.deepEqual(calls, [
+    ["podman", "rm", "--stop", "--force", "print-agent"],
+    ["podman", "exec", "-T", "api", "node", "dist/database/seed.js"],
+  ]);
+});
+
+test("TCP y simulador conservan contenedor; system siempre pertenece al anfitrion", () => {
+  assert.equal(usesNativePrintAgent({ PRINT_AGENT_MODE: "tcp" }), false);
+  assert.equal(usesNativePrintAgent({ PRINT_AGENT_MODE: "simulator" }), false);
+  assert.equal(usesNativePrintAgent({ PRINT_AGENT_MODE: "system" }), true);
+  const calls = [];
+  synchronizePilotPrintService("podman", { PRINT_AGENT_MODE: "tcp" }, {
+    compose: (...args) => calls.push(args),
+  });
+  assert.deepEqual(calls, [["podman", "up", "--detach", "--no-build", "--pull", "never", "print-agent"]]);
 });
 
 test("genera secretos y códigos válidos para el piloto", () => {
