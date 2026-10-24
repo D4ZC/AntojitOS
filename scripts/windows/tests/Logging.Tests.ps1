@@ -73,6 +73,32 @@ Describe 'Persistent Windows command diagnostics' {
             Should -Throw '*fixture compile failed on stdout*'
     }
 
+    It 'reports the build failure on stdout even when stderr only contains a warning' {
+        $command = '[Console]::Error.WriteLine("fixture deprecated warning"); [Console]::Out.WriteLine("fixture API build failed on stdout"); exit 111'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        $failure | Should -Not -BeNullOrEmpty
+        $failure.Exception.Message | Should -Match 'codigo 111'
+        $failure.Exception.Message | Should -Match '\[stdout\] fixture API build failed on stdout'
+        $failure.Exception.Message | Should -Match '\[stderr\] fixture deprecated warning'
+    }
+
+    It 'bounds each output channel independently so one cannot discard the other diagnostic' {
+        $command = '1..30 | ForEach-Object { [Console]::Out.WriteLine("fixture stdout line $_") }; 1..30 | ForEach-Object { [Console]::Error.WriteLine("fixture stderr line $_") }; exit 33'
+        $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
+        $failure = $null
+        try { Invoke-AntojitCommand -FilePath $script:LoggingNativeExecutable -Arguments @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) }
+        catch { $failure = $_ }
+        foreach ($stream in @('stdout', 'stderr')) {
+            $failure.Exception.Message | Should -Match "\[$stream\] fixture $stream line 30"
+            $failure.Exception.Message | Should -Not -Match "fixture $stream line 1(?:\D|$)"
+            [regex]::Matches($failure.Exception.Message, "(?m)^\[$stream\] ").Count | Should -Be 12
+            Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Match "fixture $stream line 1(?:\D|$)"
+        }
+    }
+
     It 'bounds and redacts the diagnostic tail while retaining the complete log' {
         $command = '1..30 | ForEach-Object { [Console]::Error.WriteLine("fixture error line $_") }; [Console]::Error.WriteLine("TOKEN=fixture-command-secret"); exit 31'
         $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($command))
@@ -155,5 +181,39 @@ Describe 'Persistent Windows command diagnostics' {
         $text | Should -Match 'Logging.Tests.ps1'
         $text | Should -Match '\[POSITION\]'
         $text | Should -Match '\[STACK\]'
+    }
+
+    It 'returns only the original error message without printing or writing logs' {
+        $before = Get-Content -LiteralPath $script:LoggingPhasePath -Raw
+        $summary = @()
+        try { throw "Fixture update failed.`nUseful original diagnostic." }
+        catch { $summary = @(Get-AntojitErrorSummary -ErrorRecord $_) }
+        $summary.Count | Should -Be 1
+        $summary[0] | Should -Be ("Fixture update failed." + [Environment]::NewLine + 'Useful original diagnostic.')
+        $summary[0] | Should -Not -Match '\[STACK\]|\[POSITION\]|OperationStopped'
+        Get-Content -LiteralPath $script:LoggingPhasePath -Raw | Should -Be $before
+    }
+
+    It 'redacts credentials and complete private key blocks from the error summary' {
+        $message = "TOKEN=fixture-summary-secret`npostgres://restaurant:fixture-summary-password@localhost/antojitos`n-----BEGIN PRIVATE KEY-----`nfixture-summary-key-body`n-----END PRIVATE KEY-----`nFixture original failure."
+        $summary = $null
+        try { throw $message }
+        catch { $summary = Get-AntojitErrorSummary -ErrorRecord $_ }
+        $summary | Should -Match 'TOKEN=\[REDACTED\]'
+        $summary | Should -Match 'postgres://\[REDACTED\]@localhost/antojitos'
+        $summary | Should -Match '\[PRIVATE KEY REDACTED\]'
+        $summary | Should -Match 'Fixture original failure\.'
+        $summary | Should -Not -Match 'fixture-summary-secret|fixture-summary-password|fixture-summary-key-body'
+    }
+
+    It 'redacts an unterminated private key and does not affect the next error summary' {
+        $summary = $null
+        try { throw "Fixture precheck failed.`n-----BEGIN RSA PRIVATE KEY-----`nfixture-truncated-key-body`nmore-truncated-key-body" }
+        catch { $summary = Get-AntojitErrorSummary -ErrorRecord $_ }
+        $summary | Should -Match 'Fixture precheck failed\.'
+        $summary | Should -Match '\[PRIVATE KEY REDACTED\]'
+        $summary | Should -Not -Match 'truncated-key-body'
+        try { throw 'Fixture next failure.' }
+        catch { Get-AntojitErrorSummary -ErrorRecord $_ | Should -Be 'Fixture next failure.' }
     }
 }

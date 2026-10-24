@@ -234,6 +234,57 @@ function Wait-AntojitClose {
     }
 }
 
+function Write-AntojitFailureSummary {
+    param(
+        [Parameter(Mandatory)][Management.Automation.ErrorRecord]$ErrorRecord,
+        [string]$Directory
+    )
+    # The technical stack remains in the complete logs. End the console with
+    # the original message so throw/OperationStopped cannot hide the cause.
+    $message = 'No se pudo preparar la operacion. Consulta bootstrap-error.log en la carpeta de logs.'
+    if (Get-Command Get-AntojitErrorSummary -ErrorAction SilentlyContinue) {
+        try { $message = Get-AntojitErrorSummary -ErrorRecord $ErrorRecord } catch { }
+    }
+    $summary = @('AntojitOS - resumen del error', '', $message) -join [Environment]::NewLine
+    $path = $null
+    if ($Directory) {
+        $path = Join-Path $Directory 'error-resumen.txt'
+        $summary += [Environment]::NewLine + [Environment]::NewLine + "Registros completos: $Directory"
+        try {
+            [IO.File]::WriteAllText($path, $summary, (New-Object Text.UTF8Encoding($false)))
+        } catch {
+            $path = $null
+            Write-Host 'No se pudo guardar el resumen; conserva la carpeta de logs.' -ForegroundColor Yellow
+        }
+    }
+    Write-Host ''
+    Write-Host $summary -ForegroundColor Red
+    if ($path) {
+        Write-Host "Comparte este archivo para revisar el fallo: $path" -ForegroundColor Cyan
+        Write-Host 'Tambien puedes abrir final_script.cmd y elegir 5 para ver el ultimo error.'
+    }
+}
+
+function Open-AntojitLogDirectory {
+    param([Parameter(Mandatory)][string]$Directory)
+    $parent = Split-Path -Parent $Directory
+    # Opening Logs creates a new session. Find the last failed session instead
+    # of selecting the new, empty one, and keep the complete logs accessible.
+    $reports = @(Get-ChildItem -LiteralPath $parent -Directory | ForEach-Object {
+        $path = Join-Path $_.FullName 'error-resumen.txt'
+        if (Test-Path -LiteralPath $path -PathType Leaf) { Get-Item -LiteralPath $path }
+    })
+    $latest = $reports | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+    if ($latest) {
+        Write-Host 'Ultimo error registrado:' -ForegroundColor Yellow
+        Get-Content -LiteralPath $latest.FullName -Encoding UTF8 | ForEach-Object { Write-Host $_ }
+        Write-Host "Archivo para compartir: $($latest.FullName)" -ForegroundColor Cyan
+        Start-Process -FilePath 'explorer.exe' -ArgumentList ('/select,"{0}"' -f $latest.FullName) | Out-Null
+    } else {
+        Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f $parent) | Out-Null
+    }
+}
+
 function Invoke-AntojitFinalMain {
     param([hashtable]$Options)
     foreach ($name in @('Action', 'Unattended', 'NoPause', 'ConfirmMaintenance')) {
@@ -290,7 +341,7 @@ function Invoke-AntojitFinalMain {
             $fromMenu = $selected -eq 'Menu'
             if ($fromMenu) { $selected = Read-AntojitAction }
             if ($selected -eq 'Logs') {
-                Start-Process -FilePath 'explorer.exe' -ArgumentList ('"{0}"' -f (Split-Path -Parent $directory)) | Out-Null
+                Open-AntojitLogDirectory -Directory $directory
             } elseif ($selected -ne 'Exit') {
                 if ($fromMenu -and $selected -in @('Install', 'AutoStart') -and -not $Options.ContainsKey('AutoStartMode')) {
                     $Options.AutoStartMode = Read-AntojitAutoStartMode
@@ -320,6 +371,10 @@ function Invoke-AntojitFinalMain {
             $detail = ($failure | Format-List * -Force | Out-String) + "`n" + $failure.ScriptStackTrace
             Write-Host $detail
             if ($directory) { Add-Content -LiteralPath (Join-Path $directory 'bootstrap-error.log') -Value $detail -Encoding UTF8 }
+        }
+        if ($code -eq 1) {
+            try { Write-AntojitFailureSummary -ErrorRecord $failure -Directory $directory }
+            catch { Write-Host 'Consulta la carpeta de logs para ver el fallo original.' -ForegroundColor Yellow }
         }
     } finally {
         if ($directory) { Write-Host "Resultado: $code. Conserva la carpeta de logs: $directory" -ForegroundColor Cyan }

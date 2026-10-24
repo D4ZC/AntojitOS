@@ -38,6 +38,25 @@ function Write-AntojitError {
     Write-AntojitLog -Message ($details -join [Environment]::NewLine)
 }
 
+function Get-AntojitErrorSummary {
+    param([Parameter(Mandatory)][Management.Automation.ErrorRecord]$ErrorRecord)
+    $message = if ($ErrorRecord.Exception) { $ErrorRecord.Exception.Message } else { $null }
+    if ([string]::IsNullOrWhiteSpace($message)) { $message = $ErrorRecord.ToString() }
+    $safeLines = New-Object 'System.Collections.Generic.List[string]'
+    $privateKeyBlock = $false
+    foreach ($line in ($message -split '\r\n|\n|\r')) {
+        # A truncated error can contain BEGIN without END. Never show its body,
+        # and keep this state local so summarizing another error starts cleanly.
+        if ($privateKeyBlock -or $line -match '-----BEGIN [^-]*PRIVATE KEY-----') {
+            $safeLines.Add('[PRIVATE KEY REDACTED]')
+            $privateKeyBlock = $line -notmatch '-----END [^-]*PRIVATE KEY-----'
+        } else {
+            $safeLines.Add((ConvertTo-AntojitLogText -Text $line))
+        }
+    }
+    return ($safeLines -join [Environment]::NewLine)
+}
+
 function Invoke-AntojitCommand {
     param(
         [Parameter(Mandatory)][string]$FilePath,
@@ -60,8 +79,8 @@ function Invoke-AntojitCommand {
     } else { (Get-Location).ProviderPath }
     $command = ConvertTo-AntojitLogText -Text ('"{0}" {1}' -f $FilePath, $startInfo.Arguments)
     $output = New-Object 'System.Collections.Generic.List[string]'
-    $recentOutput = New-Object 'System.Collections.Generic.Queue[string]'
-    $recentErrors = New-Object 'System.Collections.Generic.Queue[string]'
+    $recentStdout = New-Object 'System.Collections.Generic.Queue[string]'
+    $recentStderr = New-Object 'System.Collections.Generic.Queue[string]'
     $privateKeyBlock = $false
     $process = New-Object Diagnostics.Process
     $process.StartInfo = $startInfo
@@ -90,12 +109,12 @@ function Invoke-AntojitCommand {
                         $privateKeyBlock = $line -notmatch '-----END [^-]*PRIVATE KEY-----'
                     }
                     if ($safeLine.Length -gt 1000) { $safeLine = $safeLine.Substring(0, 1000) + ' [truncado]' }
-                    $recentOutput.Enqueue("[$stream] $safeLine")
-                    while ($recentOutput.Count -gt 12) { [void]$recentOutput.Dequeue() }
-                    if ($stream -eq 'stderr') {
-                        $recentErrors.Enqueue($safeLine)
-                        while ($recentErrors.Count -gt 12) { [void]$recentErrors.Dequeue() }
-                    }
+                    # Some tools print warnings to stderr and the actual build
+                    # failure to stdout. Retain a tail from each independently.
+                    $recent = $recentStdout
+                    if ($stream -eq 'stderr') { $recent = $recentStderr }
+                    $recent.Enqueue("[$stream] $safeLine")
+                    while ($recent.Count -gt 12) { [void]$recent.Dequeue() }
                 }
                 $next = if ($null -eq $line) { $null } elseif ($stream -eq 'stdout') {
                     $process.StandardOutput.ReadLineAsync()
@@ -110,10 +129,9 @@ function Invoke-AntojitCommand {
         $process.WaitForExit()
         $code = $process.ExitCode
         if ($code -ne 0) {
-            $detail = if ($recentErrors.Count -gt 0) { $recentErrors.ToArray() -join [Environment]::NewLine }
-                else { $recentOutput.ToArray() -join [Environment]::NewLine }
+            $detail = @($recentStdout.ToArray()) + @($recentStderr.ToArray())
             $message = "El comando $command termino con codigo $code."
-            if ($detail) { $message += [Environment]::NewLine + 'Detalle del comando:' + [Environment]::NewLine + $detail }
+            if ($detail.Count -gt 0) { $message += [Environment]::NewLine + 'Detalle del comando (ultimas lineas por canal):' + [Environment]::NewLine + ($detail -join [Environment]::NewLine) }
             $logPath = Get-AntojitLogPath
             if ($logPath) { $message += [Environment]::NewLine + "Registro completo: $logPath" }
             throw $message
@@ -497,7 +515,7 @@ function Update-AntojitNetwork {
     }
 }
 
-Export-ModuleMember -Function Start-AntojitLog, Write-AntojitLog, Get-AntojitLogPath, Write-AntojitError, Invoke-AntojitCommand, Enter-AntojitOperation,
+Export-ModuleMember -Function Start-AntojitLog, Write-AntojitLog, Get-AntojitLogPath, Write-AntojitError, Get-AntojitErrorSummary, Invoke-AntojitCommand, Enter-AntojitOperation,
     Protect-AntojitPath, Test-AntojitRepositoryUrl, Get-AntojitInstallation, Save-AntojitInstallation,
     Resolve-AntojitInstallPath,
     Assert-AntojitOwner, Assert-AntojitNoPendingUpdate, Resolve-AntojitMachineName, Assert-AntojitEnvironmentRecovery,

@@ -273,6 +273,89 @@ Describe 'Unified launcher diagnostics and unattended operation' {
         Should -Invoke Read-Host -Times 1 -Exactly
         Get-Content -LiteralPath (Join-Path $options.SessionDirectory 'bootstrap-error.log') -Raw | Should -Match 'Fixture workflow failure'
     }
+
+    It 'ends a failed update with a shareable redacted summary of the original cause' {
+        Mock Set-AntojitUpdateOptions { $true }
+        Mock Invoke-AntojitWorkflow {
+            throw "El comando podman compose build api termino con codigo 111.`nDetalle del comando:`n[stdout] fixture build cause`n[stderr] TOKEN=fixture-sensitive-token"
+        }
+        Mock Get-Command { $true } -ParameterFilter { $Name -eq 'Write-AntojitError' }
+        Mock Write-AntojitError { Write-Host '[STACK] fixture technical position' }
+        $options = @{ Action = 'Update'; NoPause = $true; SessionDirectory = (Join-Path $TestDrive 'build failed logs') }
+        Invoke-AntojitFinalMain -Options $options | Should -Be 1
+        $summary = Get-Content -LiteralPath (Join-Path $options.SessionDirectory 'error-resumen.txt') -Raw
+        $summary | Should -Match 'build api termino con codigo 111'
+        $summary | Should -Match 'fixture build cause'
+        $summary | Should -Match 'TOKEN=\[REDACTED\]'
+        $summary | Should -Not -Match 'fixture-sensitive-token|\[STACK\]|technical position'
+        $summary | Should -Match ([regex]::Escape($options.SessionDirectory))
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter {
+            $Object -like '*AntojitOS - resumen del error*' -and $Object -like '*fixture build cause*'
+        }
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -like '*Comparte este archivo*error-resumen.txt' }
+    }
+
+    It 'provides the bootstrap log location when the summary helper could not load' {
+        Mock Import-Module { throw 'Fixture module import failure.' }
+        Mock Get-Command { $null } -ParameterFilter { $Name -eq 'Get-AntojitErrorSummary' }
+        $session = Join-Path $TestDrive 'missing summary helper'
+        Invoke-AntojitFinalMain -Options @{ Action = 'Start'; NoPause = $true; SessionDirectory = $session } | Should -Be 1
+        $summary = Get-Content -LiteralPath (Join-Path $session 'error-resumen.txt') -Raw
+        $summary | Should -Match 'bootstrap-error.log'
+        Get-Content -LiteralPath (Join-Path $session 'bootstrap-error.log') -Raw | Should -Match 'Fixture module import failure'
+    }
+
+    It 'preserves the workflow failure if generating its summary also fails' {
+        Mock Invoke-AntojitWorkflow { throw 'Fixture original workflow failure.' }
+        Mock Write-AntojitFailureSummary { throw 'Fixture report write failure.' }
+        $session = Join-Path $TestDrive 'summary failure'
+        Invoke-AntojitFinalMain -Options @{ Action = 'Start'; NoPause = $true; SessionDirectory = $session } | Should -Be 1
+        Get-Content -LiteralPath (Join-Path $session 'bootstrap-error.log') -Raw | Should -Match 'Fixture original workflow failure'
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -like '*fallo original*' }
+    }
+
+    It 'does not create an error summary when the operation succeeds or requires a restart' {
+        $session = Join-Path $TestDrive 'successful operation'
+        Invoke-AntojitFinalMain -Options @{ Action = 'Start'; NoPause = $true; SessionDirectory = $session } | Should -Be 0
+        Test-Path -LiteralPath (Join-Path $session 'error-resumen.txt') | Should -BeFalse
+        Mock Invoke-AntojitWorkflow {
+            $failure = New-Object InvalidOperationException('Fixture Windows restart required.')
+            $failure.Data['RestartRequired'] = $true
+            throw $failure
+        }
+        $session = Join-Path $TestDrive 'restart operation'
+        Invoke-AntojitFinalMain -Options @{ Action = 'Install'; NoPause = $true; SessionDirectory = $session } | Should -Be 3010
+        Test-Path -LiteralPath (Join-Path $session 'error-resumen.txt') | Should -BeFalse
+    }
+
+    It 'opens the latest failure report from Logs instead of the new session' {
+        $root = Join-Path $TestDrive 'all sessions'
+        $old = Join-Path $root 'previous failure'
+        $latest = Join-Path $root 'latest failure'
+        New-Item -ItemType Directory -Path $old, $latest -Force | Out-Null
+        $oldReport = Join-Path $old 'error-resumen.txt'
+        $latestReport = Join-Path $latest 'error-resumen.txt'
+        Set-Content -LiteralPath $oldReport -Value 'Fixture older cause.'
+        $latestText = 'Fixture latest build cause: conexi' + [char]0x00F3 + 'n.'
+        [IO.File]::WriteAllText($latestReport, $latestText, (New-Object Text.UTF8Encoding($false)))
+        [IO.File]::SetLastWriteTimeUtc($oldReport, [DateTime]::UtcNow.AddDays(-1))
+        Mock Start-Process { }
+        Invoke-AntojitFinalMain -Options @{ Action = 'Logs'; NoPause = $true; SessionDirectory = (Join-Path $root 'new logs session') } | Should -Be 0
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $FilePath -eq 'explorer.exe' -and $ArgumentList -eq ('/select,"{0}"' -f $latestReport)
+        }
+        Should -Invoke Write-Host -Times 1 -Exactly -ParameterFilter { $Object -eq $latestText }
+        Should -Invoke Invoke-AntojitWorkflow -Times 0 -Exactly
+    }
+
+    It 'opens the logs folder when no previous error report exists' {
+        $root = Join-Path $TestDrive 'sessions without failure'
+        Mock Start-Process { }
+        Invoke-AntojitFinalMain -Options @{ Action = 'Logs'; NoPause = $true; SessionDirectory = (Join-Path $root 'new logs session') } | Should -Be 0
+        Should -Invoke Start-Process -Times 1 -Exactly -ParameterFilter {
+            $FilePath -eq 'explorer.exe' -and $ArgumentList -eq ('"{0}"' -f $root)
+        }
+    }
 }
 
 Describe 'Windows double-click launcher' {
