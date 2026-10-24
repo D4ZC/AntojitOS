@@ -167,6 +167,43 @@ Describe 'Windows USB configuration and lifecycle' {
             Get-AntojitManagedPrintProcess -Configuration $config | Should -BeNullOrEmpty
         }
 
+        It 'reads a UTF-8 log while its redirected writer remains open and releases the reader' {
+            $path = Join-Path $script:PrintInstallation.Root 'agent.stdout.log'
+            $message = 'Agente de impresi' + [char]0x00F3 + 'n activo en modo system - caja'
+            $writer = [IO.File]::Open($path, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+            try {
+                $bytes = [Text.Encoding]::UTF8.GetBytes($message)
+                $writer.Write($bytes, 0, $bytes.Length)
+                $writer.Flush()
+                if ($env:OS -eq 'Windows_NT') {
+                    # Reproduce the original Windows sharing violation with a
+                    # live writer, instead of mocking a completed log file.
+                    { [IO.File]::ReadAllText($path) } | Should -Throw
+                }
+                Read-AntojitPrintLog -Path $path | Should -BeExactly $message
+            } finally { $writer.Dispose() }
+            $exclusive = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+            $exclusive.Dispose()
+        }
+
+        It 'retries a temporarily exclusive Windows log lock and reads after it is released' -Skip:($env:OS -ne 'Windows_NT') {
+            $path = Join-Path $script:PrintInstallation.Root 'locked.stdout.log'
+            [IO.File]::WriteAllText($path, 'activo en modo system')
+            $writer = [IO.File]::Open($path, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+            try { Read-AntojitPrintLog -Path $path | Should -BeNullOrEmpty }
+            finally { $writer.Dispose() }
+            Read-AntojitPrintLog -Path $path | Should -BeExactly 'activo en modo system'
+        }
+
+        It 'preserves a missing-log error instead of treating every IO error as a retry' {
+            $path = Join-Path $script:PrintInstallation.Root 'missing.stdout.log'
+            $caught = $null
+            try { Read-AntojitPrintLog -Path $path }
+            catch { $caught = $_ }
+            $caught | Should -Not -BeNullOrEmpty
+            $caught.Exception.GetBaseException() | Should -BeOfType ([IO.FileNotFoundException])
+        }
+
         It 'starts the prepared Windows runtime and clears inherited simulator overrides only for launch' {
             $config = Initialize-AntojitPrintConfiguration -Installation $script:PrintInstallation -PrinterQueue 'USB Caja'
             $release = Join-Path $config.StateDirectory 'releases/test-release'
@@ -186,18 +223,63 @@ Describe 'Windows USB configuration and lifecycle' {
                 $env:PRINT_AGENT_MODE | Should -BeNullOrEmpty
                 $env:PRINT_AGENT_STOP_FILE | Should -Not -BeNullOrEmpty
                 $ArgumentList | Should -Match '--env-file='
-                [IO.File]::WriteAllText($RedirectStandardOutput, 'Agente activo en modo system')
+                $script:StartupLogWriter = [IO.File]::Open($RedirectStandardOutput, [IO.FileMode]::Create, [IO.FileAccess]::Write, [IO.FileShare]::Read)
+                $bytes = [Text.Encoding]::UTF8.GetBytes('Agente activo en modo system')
+                $script:StartupLogWriter.Write($bytes, 0, $bytes.Length)
+                $script:StartupLogWriter.Flush()
                 return $script:StartPrintProcess
             }
+            $script:StartupLogWriter = $null
             $previous = $env:PRINT_AGENT_MODE
             try {
                 $env:PRINT_AGENT_MODE = 'simulator'
                 Start-AntojitNativePrintAgent -Installation $script:PrintInstallation -RuntimeDirectory $release
                 $env:PRINT_AGENT_MODE | Should -Be 'simulator'
-            } finally { $env:PRINT_AGENT_MODE = $previous }
+            } finally {
+                $env:PRINT_AGENT_MODE = $previous
+                if ($null -ne $script:StartupLogWriter) { $script:StartupLogWriter.Dispose() }
+            }
             Should -Invoke Invoke-AntojitCompose -Times 1 -Exactly -ParameterFilter { ($Arguments -join '|') -eq 'rm|--stop|--force|print-agent' }
             (Get-Content -LiteralPath $config.ActivePath -Raw | ConvertFrom-Json).RuntimeDirectory | Should -Be $release
             (Get-Content -LiteralPath $config.ProcessPath -Raw | ConvertFrom-Json).ProcessId | Should -Be 920
+        }
+
+        It 'keeps log polling bounded when readiness after a temporary lock is <EventuallyReady>' -TestCases @(
+            @{ EventuallyReady = $true }, @{ EventuallyReady = $false }
+        ) {
+            param($EventuallyReady)
+            $config = Initialize-AntojitPrintConfiguration -Installation $script:PrintInstallation -PrinterQueue 'USB Caja'
+            $release = Join-Path $config.StateDirectory 'releases/test-release'
+            $script:PollingPrintProcess = [pscustomobject]@{ Id = 922; StartTime = [datetime]'2026-01-01T00:00:00Z' }
+            $script:PollingPrintProcess | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { param($Timeout) return $false }
+            $script:PollingPrintReads = 0
+            $script:PollingPrintEventuallyReady = $EventuallyReady
+            Mock Assert-AntojitPrintRuntime { }
+            Mock Get-AntojitManagedPrintProcess { $null }
+            Mock Get-AntojitNode { 'node.exe' }
+            Mock Get-AntojitInstalledPrinter { [pscustomobject]@{ Name = 'USB Caja' } }
+            Mock Invoke-AntojitCompose { }
+            Mock Start-Process {
+                param($RedirectStandardOutput)
+                [IO.File]::WriteAllText($RedirectStandardOutput, '')
+                return $script:PollingPrintProcess
+            }
+            Mock Read-AntojitPrintLog {
+                $script:PollingPrintReads++
+                if ($script:PollingPrintEventuallyReady -and $script:PollingPrintReads -gt 1) { return 'activo en modo system' }
+                return $null
+            }
+            if ($EventuallyReady) {
+                Start-AntojitNativePrintAgent -Installation $script:PrintInstallation -RuntimeDirectory $release
+                $script:PollingPrintReads | Should -Be 2
+                (Get-Content -LiteralPath $config.ActivePath -Raw | ConvertFrom-Json).RuntimeDirectory | Should -Be $release
+            } else {
+                { Start-AntojitNativePrintAgent -Installation $script:PrintInstallation -RuntimeDirectory $release } |
+                    Should -Throw '*no confirmo su inicio*stdout.log*stderr.log*'
+                $script:PollingPrintReads | Should -Be 30
+                Test-Path -LiteralPath $config.ActivePath | Should -BeFalse
+            }
+            (Get-Content -LiteralPath $config.ProcessPath -Raw | ConvertFrom-Json).ProcessId | Should -Be 922
         }
 
         It 'requests a graceful stop if saving the new process identity fails' {

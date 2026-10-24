@@ -294,6 +294,32 @@ function Update-AntojitNativePrintTask {
     }
 }
 
+function Read-AntojitPrintLog {
+    param([Parameter(Mandatory)][string]$Path)
+    $stream = $null
+    $reader = $null
+    try {
+        # Start-Process keeps the redirected log open for writing. ReadAllText
+        # shares only reads, which conflicts with that writer on Windows.
+        $sharing = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, $sharing)
+        $reader = New-Object IO.StreamReader($stream, [Text.Encoding]::UTF8, $true)
+        return $reader.ReadToEnd()
+    } catch {
+        $nativeError = $_.Exception.GetBaseException()
+        $windowsCode = $nativeError.HResult -band 0xFFFF
+        if ($nativeError -is [IO.IOException] -and $windowsCode -in @(32, 33)) {
+            # A temporary exclusive lock can occur while redirecting the file.
+            # Let the existing readiness deadline retry; preserve other errors.
+            return $null
+        }
+        throw
+    } finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        elseif ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 function Start-AntojitNativePrintAgent {
     param([Parameter(Mandatory)]$Installation, [string]$RuntimeDirectory)
     $configuration = Get-AntojitPrintConfiguration -Installation $Installation
@@ -366,11 +392,11 @@ function Start-AntojitNativePrintAgent {
             throw "El agente USB no pudo iniciar (codigo $($process.ExitCode)). Revisa $logBase.stderr.log."
         }
         if (Test-Path -LiteralPath "$logBase.stdout.log") {
-            $output = [IO.File]::ReadAllText("$logBase.stdout.log")
-            if ($output.Contains('activo en modo system')) { $ready = $true; break }
+            $output = Read-AntojitPrintLog -Path "$logBase.stdout.log"
+            if ($null -ne $output -and $output.Contains('activo en modo system')) { $ready = $true; break }
         }
     }
-    if (-not $ready) { throw "El agente USB no confirmo su inicio. Se conserva su PID para detenerlo de forma segura; revisa $logBase.stderr.log." }
+    if (-not $ready) { throw "El agente USB no confirmo su inicio. Se conserva su PID para detenerlo de forma segura; revisa $logBase.stdout.log y $logBase.stderr.log." }
     Save-AntojitPrintRecord -Path $configuration.ActivePath -Value @{ RuntimeDirectory = $RuntimeDirectory }
     Update-AntojitNativePrintTask -Installation $Installation
     Write-AntojitLog "Agente USB activo para '$($native['PRINTER_QUEUE'])'. Registro: $logBase.stdout.log"

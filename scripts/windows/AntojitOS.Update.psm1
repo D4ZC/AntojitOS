@@ -30,14 +30,28 @@ function Get-AntojitUpdateManifest {
     $files = $items.ToArray()
     [Array]::Sort($files, [StringComparer]::Ordinal)
     $lines = New-Object Text.StringBuilder
+    $applicationLines = New-Object Text.StringBuilder
     foreach ($file in $files) {
         $hash = (Get-FileHash -LiteralPath (Join-Path $base $file) -Algorithm SHA256).Hash
         [void]$lines.Append($file.Length).Append(':').Append($file).Append(':').Append($hash).Append("`n")
+        # Only these Windows launchers can change during recovery of the same
+        # application version. Keep build inputs, migrations and pilot.mjs here.
+        if (-not $file.StartsWith('scripts/windows/', [StringComparison]::OrdinalIgnoreCase) -and
+            $file -notin @('final_script.ps1', 'final_script.cmd', 'ACTUALIZAR-APP.cmd')) {
+            [void]$applicationLines.Append($file.Length).Append(':').Append($file).Append(':').Append($hash).Append("`n")
+        }
     }
     $sha = [Security.Cryptography.SHA256]::Create()
-    try { $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($lines.ToString())) }
+    try {
+        $digest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($lines.ToString()))
+        $applicationDigest = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($applicationLines.ToString()))
+    }
     finally { $sha.Dispose() }
-    [pscustomobject]@{ Hash = ([BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant()); Files = @($files) }
+    [pscustomobject]@{
+        Hash = ([BitConverter]::ToString($digest).Replace('-', '').ToLowerInvariant())
+        ApplicationHash = ([BitConverter]::ToString($applicationDigest).Replace('-', '').ToLowerInvariant())
+        Files = @($files)
+    }
 }
 
 function Assert-AntojitUpdateProject {
@@ -188,6 +202,7 @@ function Invoke-AntojitFolderUpdate {
     $oldPrintRuntime = $null
     $configurationChanged = $false
     $hadPrintEnvironment = $false
+    $bootstrapRetry = $null
     try {
         Assert-AntojitWindows
         Assert-AntojitAdministrator
@@ -204,8 +219,30 @@ function Invoke-AntojitFolderUpdate {
             $pending = Get-Content -LiteralPath $pendingPath -Raw | ConvertFrom-Json
             $mayHaveMigrated = ($pending.MayHaveMigrated -eq $true)
             $isFolder = ($pending.PSObject.Properties['SourceKind'] -and $pending.SourceKind -eq 'folder')
-            if ($mayHaveMigrated -and (-not $isFolder -or $pending.SourceHash -cne $manifest.Hash)) {
-                throw "Hay un despliegue pendiente que pudo aplicar migraciones. Reintenta su mismo origen; no se sustituira por otro ZIP. Conserva $pendingPath y sus respaldos."
+            if ($mayHaveMigrated) {
+                $pendingMessage = "Hay un despliegue pendiente que pudo aplicar migraciones. Reintenta su mismo origen; no se sustituira por otro ZIP. Conserva $pendingPath y sus respaldos."
+                if (-not $isFolder -or -not $pending.PSObject.Properties['SourceHash'] -or
+                    $pending.SourceHash -cnotmatch '^[a-f0-9]{64}$') { throw $pendingMessage }
+                if ($pending.SourceHash -cne $manifest.Hash) {
+                    # A bootstrap fix must prove that every application path and
+                    # byte still matches the immutable source that may have run.
+                    $previousSnapshot = [IO.Path]::GetFullPath((Join-Path $installation.StateDirectory ('update-source/' + $pending.SourceHash + '/source')))
+                    if (-not $pending.PSObject.Properties['SnapshotPath'] -or -not $pending.SnapshotPath -or
+                        -not [IO.Path]::GetFullPath([string]$pending.SnapshotPath).Equals($previousSnapshot, [StringComparison]::OrdinalIgnoreCase)) {
+                        throw "La ruta de la copia congelada pendiente no corresponde a su version. Conserva $pendingPath y sus respaldos."
+                    }
+                    $previousManifest = Get-AntojitUpdateManifest -Root $previousSnapshot
+                    if ($previousManifest.Hash -cne $pending.SourceHash) {
+                        throw "La copia congelada cambio. No se usara: $previousSnapshot"
+                    }
+                    if ($previousManifest.ApplicationHash -cne $manifest.ApplicationHash) { throw $pendingMessage }
+                    $bootstrapRetry = [pscustomobject]@{
+                        PreviousSourceHash = $pending.SourceHash
+                        SourceHash = $manifest.Hash
+                        ValidatedSnapshotPath = $previousSnapshot
+                        AcceptedAt = [DateTime]::UtcNow.ToString('o')
+                    }
+                }
             }
         }
         if (-not $ConfirmMaintenance) { throw 'Cierra caja y sal de todas las terminales. Confirma ACTUALIZAR en el lanzador o usa -ConfirmMaintenance para continuar.' }
@@ -245,13 +282,19 @@ function Invoke-AntojitFolderUpdate {
         if ($null -ne $pending -and $pending.PSObject.Properties['VerifiedBackups']) { $verified = @($pending.VerifiedBackups) }
         $firstBackup = $backupDirectory
         if ($null -ne $pending -and $pending.PSObject.Properties['FirstBackupDirectory']) { $firstBackup = $pending.FirstBackupDirectory }
+        $bootstrapRetries = @()
+        if ($null -ne $pending -and $pending.PSObject.Properties['BootstrapFixRetries']) { $bootstrapRetries = @($pending.BootstrapFixRetries) }
+        if ($null -ne $bootstrapRetry) { $bootstrapRetries += $bootstrapRetry }
         $pending = [pscustomobject]@{
-            Version = 1; SourceKind = 'folder'; SourceHash = $manifest.Hash; SnapshotPath = $snapshot
+            Version = 1; SourceKind = 'folder'; SourceHash = $manifest.Hash; ApplicationHash = $manifest.ApplicationHash; SnapshotPath = $snapshot
             Stage = 'prepared'; MayHaveMigrated = $mayHaveMigrated
             FirstBackupDirectory = $firstBackup; LatestBackupDirectory = $backupDirectory
-            VerifiedBackups = $verified; CompletedAt = $null
+            VerifiedBackups = $verified; BootstrapFixRetries = $bootstrapRetries; CompletedAt = $null
         }
         Save-AntojitUpdateRecord -Path $pendingPath -Record $pending
+        if ($null -ne $bootstrapRetry) {
+            Write-AntojitLog 'Se verifico que el nuevo ZIP solo corrige scripts Windows y conserva la misma aplicacion pendiente y sus respaldos.'
+        }
         $printBefore = Get-AntojitPrintConfiguration -Installation $installation
         if ($printBefore.Mode -eq 'native' -and (Test-Path -LiteralPath $printBefore.ActivePath -PathType Leaf)) {
             $oldPrintRuntime = [string](Get-Content -LiteralPath $printBefore.ActivePath -Raw | ConvertFrom-Json).RuntimeDirectory
