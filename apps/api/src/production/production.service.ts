@@ -67,6 +67,8 @@ interface TicketRow extends DatabaseRow {
   created_at: Date | string;
   started_at: Date | string | null;
   ready_at: Date | string | null;
+  print_status: PrintJobRow["status"] | null;
+  print_last_error: string | null;
 }
 
 interface TicketItemRow extends DatabaseRow {
@@ -107,6 +109,7 @@ interface PrintJobRow extends DatabaseRow {
   claimed_by_agent_id: string | null;
   claim_token_hash: string | null;
   lease_expires_at: Date | string | null;
+  last_error: string | null;
 }
 
 interface PlannedItem {
@@ -468,7 +471,16 @@ export class ProductionService {
     return { ticketId, centerId: first.production_center_id, jobId };
   }
 
-  async listTickets(siteId: string) {
+  async listAccountTickets(accountId: string, siteId: string) {
+    const account = await this.database.query(
+      "SELECT id FROM service_accounts WHERE id = $1 AND site_id = $2",
+      [accountId, siteId],
+    );
+    if (account.rowCount === 0) throw new NotFoundException("Cuenta inexistente");
+    return this.listTickets(siteId, accountId);
+  }
+
+  async listTickets(siteId: string, accountId?: string) {
     const [ticketsResult, itemsResult] = await Promise.all([
       this.database.query<TicketRow>(
         `SELECT
@@ -477,14 +489,24 @@ export class ProductionService {
            centers.name AS center_name, tickets.kind, tickets.round_sequence,
            tickets.status, tickets.version, accounts.service_type,
            accounts.reference, tables.name AS table_name, tickets.created_at,
-           tickets.started_at, tickets.ready_at
+           tickets.started_at, tickets.ready_at,
+           print_job.status AS print_status, print_job.last_error AS print_last_error
          FROM production_tickets tickets
          JOIN production_centers centers ON centers.id = tickets.production_center_id
          JOIN service_accounts accounts ON accounts.id = tickets.account_id
          LEFT JOIN service_tables tables ON tables.id = accounts.table_id
-         WHERE tickets.site_id = $1 AND tickets.status <> 'delivered'
+         LEFT JOIN LATERAL (
+           SELECT jobs.status, jobs.last_error
+             FROM print_jobs jobs
+            WHERE jobs.ticket_id = tickets.id AND jobs.site_id = tickets.site_id
+            ORDER BY CASE WHEN jobs.status IN ('queued', 'claimed') THEN 0 ELSE 1 END,
+                     jobs.created_at DESC, jobs.id DESC
+            LIMIT 1
+         ) print_job ON true
+         WHERE tickets.site_id = $1
+           AND (($2::uuid IS NULL AND tickets.status <> 'delivered') OR tickets.account_id = $2)
          ORDER BY tickets.created_at, tickets.id`,
-        [siteId],
+        [siteId, accountId ?? null],
       ),
       this.database.query<TicketItemRow>(
         `SELECT
@@ -492,9 +514,10 @@ export class ProductionService {
            items.quantity, items.note, items.modifiers
          FROM production_ticket_items items
          JOIN production_tickets tickets ON tickets.id = items.ticket_id
-         WHERE tickets.site_id = $1 AND tickets.status <> 'delivered'
+         WHERE tickets.site_id = $1
+           AND (($2::uuid IS NULL AND tickets.status <> 'delivered') OR tickets.account_id = $2)
          ORDER BY items.id`,
-        [siteId],
+        [siteId, accountId ?? null],
       ),
     ]);
 
@@ -521,6 +544,8 @@ export class ProductionService {
         createdAt: asDate(ticket.created_at),
         startedAt: ticket.started_at ? asDate(ticket.started_at) : null,
         readyAt: ticket.ready_at ? asDate(ticket.ready_at) : null,
+        printStatus: ticket.print_status,
+        printLastError: ticket.print_last_error,
         items: itemsResult.rows
           .filter((item) => item.ticket_id === ticket.id)
           .map((item) => ({
@@ -602,6 +627,109 @@ export class ProductionService {
     );
   }
 
+  print(ticketId: string, key: string, actor: AuthContext) {
+    return this.idempotency.execute(
+      {
+        siteId: actor.siteId,
+        scope: `production.ticket.print:${ticketId}`,
+        key,
+        requestHash: requestHash({ ticketId }),
+      },
+      async (transaction) => {
+        // Serialize manual requests even when different terminals use different
+        // idempotency keys. The agent's job lease remains authoritative.
+        const ticket = await transaction.query(
+          "SELECT id FROM production_tickets WHERE id = $1 AND site_id = $2 FOR UPDATE",
+          [ticketId, actor.siteId],
+        );
+        if (ticket.rowCount === 0) throw new NotFoundException("Comanda inexistente");
+        const jobs = await transaction.query<PrintJobRow>(
+          `SELECT * FROM print_jobs
+            WHERE ticket_id = $1 AND site_id = $2
+            ORDER BY created_at DESC, id DESC
+            FOR UPDATE`,
+          [ticketId, actor.siteId],
+        );
+        const original = jobs.rows.find((job) =>
+          job.kind === "addition" || job.kind === "cancellation"
+        );
+        if (!original) throw new NotFoundException("Comanda imprimible inexistente");
+        const active = jobs.rows.find((job) =>
+          job.status === "queued" || job.status === "claimed"
+        );
+        if (active) {
+          return {
+            status: 200,
+            body: {
+              jobId: active.id, ticketId, status: active.status,
+              created: false, requeued: false,
+            },
+          };
+        }
+
+        const latest = jobs.rows[0];
+        const failed = latest?.status === "failed" ? latest : undefined;
+        if (!failed && original.status === "cancelled") {
+          throw new ConflictException("La impresión original está cancelada; solicita una reimpresión con motivo");
+        }
+        const jobId = failed?.id ?? randomUUID();
+        const reason = "Impresión manual de comanda";
+        if (failed) {
+          await transaction.query(
+            `UPDATE print_jobs SET status = 'queued', available_at = now(),
+                max_attempts = GREATEST(max_attempts, attempts + 5),
+                claimed_by_agent_id = NULL, claim_token_hash = NULL,
+                lease_expires_at = NULL, last_error = NULL,
+                completed_at = NULL, updated_at = now()
+              WHERE id = $1 AND site_id = $2`,
+            [jobId, actor.siteId],
+          );
+        } else {
+          const items = await transaction.query<TicketItemRow>(
+            `SELECT product_name, quantity, note, modifiers
+               FROM production_ticket_items WHERE ticket_id = $1 AND site_id = $2
+              ORDER BY id`,
+            [ticketId, actor.siteId],
+          );
+          const payload = {
+            ...parseJson<Record<string, unknown>>(original.payload),
+            kind: "reprint",
+            items: items.rows.map((item) => ({
+              productName: item.product_name,
+              quantity: item.quantity,
+              note: item.note,
+              modifiers: parseJson<string[]>(item.modifiers as string | string[]),
+            })),
+            reprint: { reason, requestedBy: actor.displayName },
+          };
+          await transaction.query(
+            `INSERT INTO print_jobs (
+              id, site_id, ticket_id, kind, original_job_id, payload
+            ) VALUES ($1, $2, $3, 'reprint', $4, $5::jsonb)`,
+            [jobId, actor.siteId, ticketId, original.id, JSON.stringify(payload)],
+          );
+        }
+        const body = {
+          jobId, ticketId, status: "queued" as const,
+          created: !failed, requeued: Boolean(failed),
+        };
+        await this.audit.append(transaction, {
+          id: randomUUID(), siteId: actor.siteId, actorUserId: actor.userId,
+          terminalId: actor.terminalId,
+          action: failed ? "production.ticket.print_recovered" : "production.ticket.reprint_requested",
+          entityType: "production_ticket", entityId: ticketId, reason,
+          changes: { ...body, originalJobId: original.id },
+        });
+        await this.outbox.enqueue(transaction, {
+          id: randomUUID(), siteId: actor.siteId, eventType: "print.job.queued",
+          aggregateType: "print_job", aggregateId: jobId,
+          payload: { ...body, kind: failed?.kind ?? "reprint" },
+        });
+        return { status: 201, body };
+      },
+    );
+  }
+
   reprint(
     ticketId: string,
     input: ReprintTicketDto,
@@ -616,6 +744,11 @@ export class ProductionService {
         requestHash: requestHash(input),
       },
       async (transaction) => {
+        const ticket = await transaction.query(
+          "SELECT id FROM production_tickets WHERE id = $1 AND site_id = $2 FOR UPDATE",
+          [ticketId, actor.siteId],
+        );
+        if (ticket.rowCount === 0) throw new NotFoundException("Comanda imprimible inexistente");
         const originalResult = await transaction.query<PrintJobRow>(
           `SELECT jobs.*
              FROM print_jobs jobs
@@ -624,7 +757,7 @@ export class ProductionService {
               AND jobs.kind IN ('addition', 'cancellation')
             ORDER BY jobs.created_at
             LIMIT 1
-            FOR UPDATE`,
+            FOR UPDATE OF jobs`,
           [ticketId, actor.siteId],
         );
         const original = originalResult.rows[0];

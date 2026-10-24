@@ -36,6 +36,26 @@ describe("adaptador ESC/POS", () => {
     expect([...bytes.slice(-3)]).toEqual([0x1d, 0x56, 0x00]);
   });
 
+  it("conserva la cancelación al reimprimir para evitar preparar los productos de nuevo", () => {
+    const cancellationCopy: ProductionPayload = {
+      ...payload,
+      kind: "reprint",
+      cancellationReason: "Cliente cancela el pedido",
+      reprint: { reason: "Copia solicitada en caja", requestedBy: "Cajero" },
+    };
+    const ticket = renderPlainTicket(cancellationCopy);
+    expect(ticket).toContain("*** REIMPRESION ***");
+    expect(ticket).toContain("*** CANCELACION ***");
+    expect(ticket).toContain("Motivo: Cliente cancela el pedido");
+    expect(ticket).toContain("Motivo: Copia solicitada en caja");
+    expect(ticket).toContain("3 x Taco al pastor");
+    expect(ticket).not.toContain("NUEVA COMANDA");
+    const bytes = Buffer.from(renderEscPos(cancellationCopy));
+    expect(bytes.includes(Buffer.from("*** REIMPRESION ***"))).toBe(true);
+    expect(bytes.includes(Buffer.from("*** CANCELACION ***"))).toBe(true);
+    expect(renderPlainTicket({ ...payload, kind: "reprint" })).not.toContain("CANCELACION");
+  });
+
   it("identifica una actualización de nota sin pedir preparar otra comanda", () => {
     const ticket = renderPlainTicket({
       ...payload,

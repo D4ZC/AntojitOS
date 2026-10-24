@@ -1,6 +1,7 @@
 import type { AccountingApi } from "../accounting";
 import type { DeliveryApi, DeliveryAssignment, DeliveryDriver, SharedDelivery } from "../delivery";
 import type { ReceiptPrintingApi } from "../ReceiptPrinting";
+import type { ProductionPrintingApi } from "../ProductionPrinting";
 import { createUuid } from "@antojit-os/domain";
 import type {
   AccountManagementOptions,
@@ -14,6 +15,7 @@ import type {
   PaymentMethod,
   Precheck,
   ProductionTicket,
+  ProductionPrintResult,
   ReceiptPrintingStatus,
   ReceiptPrintResult,
   ServiceAccount,
@@ -47,7 +49,9 @@ const errorMessage = (body: unknown): string => {
   return "No fue posible completar la operación";
 };
 
-export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi {
+export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
+  private readonly productionPrintKeys = new Map<string, string>();
+
   constructor(
     private readonly baseUrl: string,
     private accessToken?: string,
@@ -462,6 +466,29 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi {
       "/v1/production/tickets",
     );
     return result.tickets;
+  }
+
+  async accountProductionTickets(accountId: string): Promise<ProductionTicket[]> {
+    const result = await this.request<{ tickets: ProductionTicket[] }>(
+      `/v1/accounts/${accountId}/production-tickets`,
+    );
+    return result.tickets;
+  }
+
+  async printProductionTicket(ticketId: string): Promise<ProductionPrintResult> {
+    // Una respuesta perdida no debe convertir el reintento en otra copia.
+    const key = this.productionPrintKeys.get(ticketId) ?? this.createIdempotencyKey();
+    this.productionPrintKeys.set(ticketId, key);
+    const result = await this.request<ProductionPrintResult>(`/v1/production/tickets/${ticketId}/print`, {
+      method: "POST",
+      idempotencyKey: key,
+      body: {},
+    });
+    if (!result?.jobId || result.ticketId !== ticketId) {
+      throw new ApiError(502, "No se pudo confirmar la impresión. Vuelve a intentarlo para consultar la misma solicitud.", result);
+    }
+    this.productionPrintKeys.delete(ticketId);
+    return result;
   }
 
   transitionProductionTicket(

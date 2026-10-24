@@ -12,6 +12,46 @@ afterEach(() => {
 });
 
 describe("PosApi", () => {
+  it("consulta las comandas de la cuenta e imprime con sesión e idempotencia", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ tickets: [{ id: "ticket-1" }] }))
+      .mockResolvedValueOnce(jsonResponse({ jobId: "job-1", ticketId: "ticket-1", status: "queued", created: false, requeued: false }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new PosApi("/api", "access-token", () => "command-print-key");
+
+    await expect(api.accountProductionTickets("account-1")).resolves.toEqual([{ id: "ticket-1" }]);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/accounts/account-1/production-tickets", {
+      method: "GET", headers: { authorization: "Bearer access-token" }, body: undefined,
+    });
+    await api.printProductionTicket("ticket-1");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/production/tickets/ticket-1/print", {
+      method: "POST",
+      headers: { authorization: "Bearer access-token", "content-type": "application/json", "idempotency-key": "command-print-key" },
+      body: JSON.stringify({}),
+    });
+  });
+
+  it.each(["conexión", "contenido"] as const)("recupera la misma impresión si se pierde la %s y renueva la clave para otra copia", async (failure) => {
+    const result = { jobId: "job-1", ticketId: "ticket-1", status: "queued", created: true, requeued: false };
+    const fetchMock = vi.fn();
+    if (failure === "conexión") fetchMock.mockRejectedValueOnce(new TypeError("Respuesta perdida"));
+    else fetchMock.mockResolvedValueOnce({ ok: true, status: 201, json: vi.fn().mockRejectedValue(new TypeError("Respuesta incompleta")) });
+    fetchMock.mockResolvedValue(jsonResponse(result));
+    vi.stubGlobal("fetch", fetchMock);
+    const createKey = vi.fn().mockReturnValueOnce("first-print-key").mockReturnValueOnce("next-copy-key");
+    const api = new PosApi("/api", "access-token", createKey);
+
+    await expect(api.printProductionTicket("ticket-1")).rejects.toThrow(failure === "conexión" ? "Respuesta perdida" : "No se pudo confirmar la impresión");
+    await expect(api.printProductionTicket("ticket-1")).resolves.toEqual(result);
+    expect(createKey).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls.slice(0, 2).map((call) => call[1].headers["idempotency-key"]))
+      .toEqual(["first-print-key", "first-print-key"]);
+
+    await api.printProductionTicket("ticket-1");
+    expect(fetchMock.mock.calls[2]![1].headers["idempotency-key"]).toBe("next-copy-key");
+    expect(createKey).toHaveBeenCalledTimes(2);
+  });
+
   it("consulta el estado de impresión y pide el original sin repetir el cobro", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ receiptId: "receipt-1", jobs: [] }));
     vi.stubGlobal("fetch", fetchMock);

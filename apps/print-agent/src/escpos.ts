@@ -71,6 +71,7 @@ const renderProduction = (payload: ProductionPayload, columns: number): string[]
       : payload.kind === "note_update" ? "*** ACTUALIZACION DE NOTA ***" : "*** NUEVA COMANDA ***";
   const lines = [
     ...page.center(title),
+    ...(payload.kind === "reprint" && payload.cancellationReason ? page.center("*** CANCELACION ***") : []),
     ...(payload.kind === "note_update" ? page.center("NO PREPARAR DE NUEVO") : []),
     ...page.center(payload.center.name.toUpperCase()),
     ...page.text(`${payload.service.label} · Ronda ${payload.roundSequence}`), page.rule,

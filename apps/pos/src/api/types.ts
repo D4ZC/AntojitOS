@@ -20,6 +20,8 @@ export interface ProductionTicket {
   createdAt: string;
   startedAt: string | null;
   readyAt: string | null;
+  printStatus?: ReceiptPrintStatus | null;
+  printLastError?: string | null;
   items: Array<{
     id: string;
     orderItemId: string | null;
@@ -333,6 +335,14 @@ export interface SalesReceipt {
 }
 
 export type ReceiptPrintStatus = "queued" | "claimed" | "completed" | "failed" | "cancelled";
+
+export interface ProductionPrintResult {
+  jobId: string;
+  ticketId: string;
+  status: ReceiptPrintStatus;
+  created: boolean;
+  requeued: boolean;
+}
 
 export interface ReceiptPrintingStatus {
   receiptId: string;

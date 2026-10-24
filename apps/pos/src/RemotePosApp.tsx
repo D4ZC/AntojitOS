@@ -29,11 +29,12 @@ import { formatMoney } from "./format";
 import { hasQuickNote, QUICK_NOTES, toggleQuickNote } from "./notes";
 import { OrderBuilder, type OrderBuilderLine } from "./OrderBuilder";
 import { ReceiptPaper, ReceiptPrintControls, type ReceiptPrintingApi } from "./ReceiptPrinting";
+import { ProductionPrintControls, type ProductionPrintingApi } from "./ProductionPrinting";
 import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
 
 const TERMINAL_STORAGE_KEY = "antojit-os.terminal.v1";
 
-export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi, ReceiptPrintingApi {
+export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
   setAccessToken(accessToken?: string): void;
   registerTerminal(input: {
     bootstrapToken: string;
@@ -605,7 +606,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     try {
       await api.sendRound(account.id, account.version);
       await refreshAccount(account.id);
-      setNotice("Comanda enviada a los centros de producción");
+      setNotice("Comanda enviada. Impresión automática en cola.");
     } catch (sendError) {
       await handleMutationError(sendError);
     } finally {
@@ -1609,6 +1610,14 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                 </div>
               </article>
             ))}
+            {session.user.permissions.includes("service.round.send") && <ProductionPrintControls
+              key={account.id}
+              api={api}
+              accountId={account.id}
+              accountVersion={account.version}
+              disabled={busy}
+              onBusyChange={setBusy}
+            />}
           </div>
           <div className={error ? "notice error-notice" : "notice"} role={error ? "alert" : "status"}><span aria-hidden="true">●</span>{error ?? notice}</div>
           <div className="order-summary">

@@ -7,6 +7,7 @@ import type {
   CashShiftReport,
   CatalogCategory,
   PaymentMethod,
+  ProductionTicket,
   SalesReceipt,
   ServiceAccount,
   ServiceLayout,
@@ -27,6 +28,7 @@ const session: Session = {
     id: "user-1",
     displayName: "Administrador",
     permissions: [
+      "service.round.send",
       "service.account.manage",
       "service.account.discount",
       "service.precheck.create",
@@ -258,6 +260,8 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   serviceLayout: vi.fn().mockResolvedValue(layout),
   openAccount: vi.fn().mockResolvedValue({ id: "account-1" }),
   account: vi.fn().mockResolvedValue(emptyAccount),
+  accountProductionTickets: vi.fn().mockResolvedValue([]),
+  printProductionTicket: vi.fn().mockResolvedValue({ jobId: "command-job-1", ticketId: "ticket-1", status: "queued", created: false, requeued: false }),
   tableAccounts: vi.fn().mockResolvedValue([]),
   openCounterAccounts: vi.fn().mockResolvedValue([]),
   accountManagementOptions: vi.fn().mockResolvedValue({
@@ -657,7 +661,19 @@ describe("POS conectado", () => {
       .mockResolvedValueOnce(emptyAccount)
       .mockResolvedValueOnce(pendingAccount)
       .mockResolvedValueOnce(sentAccount);
-    const api = createApi({ account: accountMock });
+    const ticket: ProductionTicket = {
+      id: "ticket-1", accountId: "account-1", roundId: "round-1",
+      center: { id: "center-1", code: "KITCHEN", name: "Cocina" },
+      kind: "addition", roundSequence: 1, status: "pending", version: 0,
+      service: { type: "table", label: "Mesa 1" },
+      createdAt: "2030-01-01T12:00:00.000Z", startedAt: null, readyAt: null,
+      printStatus: "queued", printLastError: null,
+      items: [{ id: "ticket-item-1", orderItemId: "item-1", productName: "Quesadilla", quantity: 1, note: null, modifiers: [] }],
+    };
+    const api = createApi({
+      account: accountMock,
+      accountProductionTickets: vi.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([]).mockResolvedValue([ticket]),
+    });
     await loginAndSelectTable(api);
 
     fireEvent.click(screen.getByRole("button", { name: /agregar quesadilla/i }));
@@ -672,6 +688,12 @@ describe("POS conectado", () => {
       modifierIds: [],
     });
     expect(api.sendRound).toHaveBeenCalledWith("account-1", 1);
+    const printButton = await screen.findByRole("button", { name: /Imprimir comanda/i });
+    expect(screen.getByText("Comanda enviada. Impresión automática en cola.")).toBeInTheDocument();
+    expect(api.printProductionTicket).not.toHaveBeenCalled();
+    fireEvent.click(printButton);
+    await waitFor(() => expect(api.printProductionTicket).toHaveBeenCalledWith("ticket-1"));
+    expect(api.sendRound).toHaveBeenCalledTimes(1);
   });
 
   it("arma varias tostadas con opciones, cantidad y observaciones por variante", async () => {

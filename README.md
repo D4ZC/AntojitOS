@@ -41,7 +41,7 @@ El uso de cliente opcional y envío automático a cocina se describe en [`docs/p
 
 La administración de proveedores, cargos y pagos, y las comandas de reparto en el teléfono se describen en [`docs/phase-5a/ADMINISTRACION_Y_REPARTOS.md`](docs/phase-5a/ADMINISTRACION_Y_REPARTOS.md).
 
-La impresión de tickets de 80 mm en la Bixolon SRP-F310 por USB o Ethernet se configura en [`docs/phase-3/BIXOLON_SRP_F310.md`](docs/phase-3/BIXOLON_SRP_F310.md).
+Las comandas se encolan para impresión automática al enviarlas y muestran **Imprimir comanda** para solicitar una impresión manual. La configuración de la impresora de caja y los tickets de 80 mm en la Bixolon SRP-F310 por USB o Ethernet está en [`docs/phase-3/BIXOLON_SRP_F310.md`](docs/phase-3/BIXOLON_SRP_F310.md); el modo simulador confirma trabajos sin imprimir en papel.
 
 La PWA queda en `http://localhost:8080`; la guía de operación y recuperación está en [`docs/phase-5a/EJECUCION_PILOTO.md`](docs/phase-5a/EJECUCION_PILOTO.md).
 

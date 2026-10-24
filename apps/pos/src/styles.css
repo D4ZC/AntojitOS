@@ -505,6 +505,74 @@ h2 {
   overflow-y: auto;
 }
 
+.production-print-controls {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+
+.production-print-controls h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.production-print-heading,
+.production-print-list,
+.production-print-ticket-copy,
+.production-print-status {
+  display: grid;
+  gap: 6px;
+}
+
+.production-print-list {
+  gap: 8px;
+}
+
+.production-print-heading p {
+  color: var(--muted);
+}
+
+.production-print-controls p {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.production-print-ticket {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: #f7f5f0;
+  font-size: 13px;
+}
+
+.production-print-ticket small,
+.production-print-status {
+  color: var(--muted);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.production-print-controls button {
+  min-height: 44px;
+  padding: 10px 12px;
+  border: 1px solid #b8ccc3;
+  border-radius: 10px;
+  color: var(--forest);
+  background: white;
+  font-weight: 700;
+}
+
+.production-print-controls .form-error,
+.production-print-controls .production-printer-error {
+  color: #a3332b;
+}
+
 .empty-order {
   display: grid;
   height: 100%;

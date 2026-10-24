@@ -14,6 +14,7 @@ import {
 import { ApiBearerAuth, ApiHeader, ApiTags } from "@nestjs/swagger";
 import type { RequestWithAuth } from "../security/auth-context.js";
 import { RequirePermissions } from "../security/permissions.decorator.js";
+import { ProductionService } from "../production/production.service.js";
 import { AccountsService } from "./accounts.service.js";
 import { AddOrderItemDto } from "./dto/add-order-item.dto.js";
 import { ApplyAccountAdjustmentDto } from "./dto/apply-account-adjustment.dto.js";
@@ -41,7 +42,10 @@ const requireIdempotencyKey = (key: string | undefined): string => {
 @ApiBearerAuth()
 @Controller("v1/accounts")
 export class AccountsController {
-  constructor(@Inject(AccountsService) private readonly accounts: AccountsService) {}
+  constructor(
+    @Inject(AccountsService) private readonly accounts: AccountsService,
+    @Inject(ProductionService) private readonly production: ProductionService,
+  ) {}
 
   @Get("open-counter")
   @RequirePermissions("service.account.read")
@@ -74,6 +78,15 @@ export class AccountsController {
     @Req() request: RequestWithAuth,
   ) {
     return this.accounts.managementOptions(accountId, request.auth);
+  }
+
+  @Get(":accountId/production-tickets")
+  @RequirePermissions("service.account.read")
+  productionTickets(
+    @Param("accountId", ParseUUIDPipe) accountId: string,
+    @Req() request: RequestWithAuth,
+  ) {
+    return this.production.listAccountTickets(accountId, request.auth.siteId);
   }
 
   @Post()

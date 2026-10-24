@@ -74,4 +74,20 @@ export class ProductionController {
     );
     return { ...result.body, idempotencyReplayed: result.replayed };
   }
+
+  @Post("tickets/:ticketId/print")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("service.round.send")
+  async print(
+    @Param("ticketId", ParseUUIDPipe) ticketId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.production.print(
+      ticketId,
+      requireIdempotencyKey(key),
+      request.auth,
+    );
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
 }

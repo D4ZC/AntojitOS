@@ -44,7 +44,7 @@ Configurar `PRINTER_QUEUE` con el nombre de la cola, respetando espacios. En Win
 
 El agente en modo `system` debe ejecutarse directamente en el sistema que tiene instalada esa cola. Un contenedor Linux de Podman en Windows/macOS no hereda las colas USB del anfitrión. Cambiar sólo `.env.pilot` a `system` dentro del contenedor no configura acceso a la impresora de Windows.
 
-Crear un archivo local `.env.print-agent` en la raíz del proyecto. Está excluido de Git. Ejemplo para una impresora de caja dedicada:
+Crear un archivo local `.env.print-agent` en la raíz del proyecto. Está excluido de Git. Este ejemplo usa la impresora USB de la PC principal de caja para imprimir automáticamente las comandas de Cocina y Barra, además de los recibos y cortes de la caja principal:
 
 ```dotenv
 PRINT_AGENT_MODE=system
@@ -57,7 +57,7 @@ PRINT_AGENT_API_URL=http://127.0.0.1:8080/api
 PRINT_AGENT_SITE_CODE=PILOT
 PRINT_AGENT_CODE=PRINT-USB-CAJA
 PRINT_AGENT_NAME="Bixolon caja USB"
-PRINT_AGENT_CENTERS=
+PRINT_AGENT_CENTERS=KITCHEN,BAR
 PRINT_AGENT_REGISTERS=MAIN
 PRINT_AGENT_CREDENTIALS_PATH=var/print-agent-usb/credentials.json
 BOOTSTRAP_TOKEN=REEMPLAZAR_CON_EL_VALOR_DE_LA_INSTALACION
@@ -65,9 +65,16 @@ BOOTSTRAP_TOKEN=REEMPLAZAR_CON_EL_VALOR_DE_LA_INSTALACION
 
 La dirección API debe usar el puerto HTTP configurado para la instalación. En desarrollo con la API sin proxy suele ser `http://127.0.0.1:3000/api`.
 
-`PRINT_AGENT_CENTERS=` evita que una impresora de caja reclame comandas de cocina. Para cocina usar `PRINT_AGENT_CENTERS=KITCHEN` y dejar `PRINT_AGENT_REGISTERS=` vacío. Para ambos tipos de trabajo configurar los dos destinos. Debe existir al menos una caja o centro de producción.
+`PRINT_AGENT_CENTERS=KITCHEN,BAR` habilita las comandas de esos centros; `PRINT_AGENT_REGISTERS=MAIN` habilita los recibos y cortes de caja. Para imprimir únicamente recibos y cortes, dejar `PRINT_AGENT_CENTERS=` vacío. Para una impresora exclusiva de cocina usar `PRINT_AGENT_CENTERS=KITCHEN` y dejar `PRINT_AGENT_REGISTERS=` vacío. Debe existir al menos una caja o centro de producción.
 
-Los destinos se guardan en la API al registrar el agente. Cambiarlos en el archivo de un agente que ya tiene credenciales no actualiza ese registro. Para cambiar los destinos, detener el agente anterior y registrar otro con un código nuevo y una ruta de credenciales nueva, como `PRINT-USB-CAJA` y `var/print-agent-usb/credentials.json` en el ejemplo. No reutilizar ni borrar las credenciales existentes como forma de cambiar las rutas.
+Los destinos se guardan en la API al registrar el agente. Cambiarlos en el archivo de un agente que ya tiene credenciales no actualiza ese registro. Si ya se registró un agente de caja sin centros de producción:
+
+1. Detener el agente anterior y conservar su archivo de credenciales.
+2. Configurar `PRINT_AGENT_CENTERS=KITCHEN,BAR` y `PRINT_AGENT_REGISTERS=MAIN` en el nuevo archivo.
+3. Usar un código y una ruta de credenciales que aún no existan, por ejemplo `PRINT_AGENT_CODE=PRINT-USB-CAJA-2` y `PRINT_AGENT_CREDENTIALS_PATH=var/print-agent-usb-2/credentials.json`.
+4. Iniciar el nuevo agente con el comando indicado abajo. Su primer arranque registra los nuevos destinos.
+
+Conservar también el código y las credenciales del agente anterior; no reutilizarlos ni borrarlos como forma de cambiar las rutas.
 
 Preparar el agente desde la raíz del proyecto con Node.js 24 y las dependencias del proyecto instaladas:
 
@@ -77,19 +84,29 @@ pnpm --filter @antojit-os/print-agent build
 
 Antes de iniciar este agente, detener cualquier otro que atienda los mismos destinos. Por ejemplo, detener el `print-agent` del piloto mediante el mismo comando de Compose y nombre de proyecto que se usó para iniciar esa instalación. Dos agentes que reclamen la misma caja pueden repartirse los trabajos y producir tickets en salidas distintas.
 
-Iniciar el agente local:
+Iniciar el agente de forma nativa en la PC de caja, desde la raíz del proyecto:
 
 ```bash
 node --env-file=.env.print-agent apps/print-agent/dist/main.js
 ```
 
-El proceso permanece activo. La computadora y el agente deben estar encendidos para imprimir. La primera ejecución registra su código y guarda una credencial local; conservar ese archivo y el mismo código en reinicios. El token de instalación permite registrar el agente, mientras que la credencial guardada autentica las siguientes ejecuciones. No compartir el archivo de configuración ni las credenciales.
+El proceso permanece activo. La computadora y el agente deben estar encendidos para imprimir. El arranque de los contenedores del piloto no inicia este proceso nativo: debe iniciarse también en cada encendido de la PC. La primera ejecución registra su código y guarda una credencial local; conservar ese archivo y el mismo código en reinicios. El token de instalación permite registrar el agente, mientras que la credencial guardada autentica las siguientes ejecuciones. No compartir el archivo de configuración ni las credenciales.
 
 ## Simulación y comprobación
 
-Para revisar el formato sin enviar trabajos a una impresora, usar `PRINT_AGENT_MODE=simulator`. El agente escribe el ticket de texto y los bytes ESC/POS en el directorio `PRINT_AGENT_OUTPUT_DIR`. El texto usa el mismo ancho configurado para la salida real.
+Las instalaciones nuevas usan `PRINT_AGENT_MODE=simulator` si todavía no se configuró una impresora. Este modo escribe el ticket de texto y los bytes ESC/POS en el directorio `PRINT_AGENT_OUTPUT_DIR`, y confirma el trabajo sin imprimir en papel. El texto usa el mismo ancho configurado para la salida real. Para obtener papel configurar `tcp` con la dirección de la impresora, o ejecutar el agente nativo en modo `system` con su cola instalada.
 
 ## Uso desde el POS
+
+Al enviar una comanda desde la cuenta se genera y encola automáticamente su impresión para cada centro de producción. El agente de la PC principal imprime en cuanto recibe el trabajo, siempre que tenga asignados esos centros y una impresora configurada.
+
+La comanda enviada muestra el botón **Imprimir comanda** para solicitar la impresión manualmente:
+
+- Si hay un trabajo pendiente o en proceso, reutiliza ese trabajo para evitar otra impresión.
+- Si la impresión falló, vuelve a poner el trabajo en cola para reintentarlo.
+- Si ya se completó, genera una copia identificada como reimpresión.
+
+El botón no vuelve a enviar los productos a producción ni modifica la cuenta. Antes de solicitar otra copia, revisar el papel y la cola si el resultado anterior es incierto.
 
 Al cobrar se genera y encola automáticamente el ticket. En el comprobante del POS:
 
