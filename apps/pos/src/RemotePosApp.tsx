@@ -28,11 +28,12 @@ import type {
 import { formatMoney } from "./format";
 import { hasQuickNote, QUICK_NOTES, toggleQuickNote } from "./notes";
 import { OrderBuilder, type OrderBuilderLine } from "./OrderBuilder";
+import { ReceiptPaper, ReceiptPrintControls, type ReceiptPrintingApi } from "./ReceiptPrinting";
 import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
 
 const TERMINAL_STORAGE_KEY = "antojit-os.terminal.v1";
 
-export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi {
+export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi, ReceiptPrintingApi {
   setAccessToken(accessToken?: string): void;
   registerTerminal(input: {
     bootstrapToken: string;
@@ -79,7 +80,6 @@ export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi {
     input: { expectedVersion: number; payments: CheckoutPayment[] },
   ): Promise<SalesReceipt>;
   recentReceipts(): Promise<SalesReceiptSummary[]>;
-  reprintReceipt(receiptId: string, reason: string): Promise<{ jobId: string }>;
   refundReceipt(
     receiptId: string,
     input: { kind: "cancellation" | "refund"; reason: string },
@@ -1711,22 +1711,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
       {receipt && (
         <div className="modal-backdrop" role="presentation">
           <section className="touch-modal receipt-modal" role="dialog" aria-modal="true" aria-labelledby="receipt-title">
-            <div className="receipt-heading"><span className="brand-mark" aria-hidden="true">A</span><div><span className="eyebrow">Pago confirmado</span><h2 id="receipt-title">Ticket {receipt.folio}</h2></div></div>
-            <div className="receipt-meta"><strong>{serviceLabel(receipt.account)}</strong><span>{new Date(receipt.issuedAt).toLocaleString("es-MX")}</span><small>{receipt.shift.register.name}</small></div>
-            <div className="receipt-items">
-              {receipt.account.items.filter((item) => item.preparationState !== "cancelled").map((item) => <div key={item.id}><span>{item.quantity} × {item.productName}</span><strong>{formatMoney(item.lineTotalInCents)}</strong></div>)}
-            </div>
-            <div className="receipt-totals">
-              <div><span>Subtotal</span><span>{formatMoney(receipt.account.totals.subtotalInCents)}</span></div>
-              {receipt.account.totals.discountInCents > 0 && <div><span>Descuento</span><span>− {formatMoney(receipt.account.totals.discountInCents)}</span></div>}
-              <div><span>IVA</span><span>{formatMoney(receipt.account.totals.taxInCents)}</span></div>
-              <div><strong>Venta</strong><strong>{formatMoney(receipt.totals.saleInCents)}</strong></div>
-              {receipt.totals.tipInCents > 0 && <div><span>Propina</span><strong>{formatMoney(receipt.totals.tipInCents)}</strong></div>}
-            </div>
-            <div className="receipt-payments">
-              {receipt.payments.map((payment) => <div key={payment.id}><span>{payment.method.name}{payment.reference ? ` · ${payment.reference}` : ""}</span><strong>{formatMoney(payment.totalInCents)}</strong></div>)}
-              {receipt.totals.changeInCents > 0 && <div className="change-row"><span>Cambio</span><strong>{formatMoney(receipt.totals.changeInCents)}</strong></div>}
-            </div>
+            <ReceiptPaper receipt={receipt} titleId="receipt-title" />
+            <ReceiptPrintControls api={api} receipt={receipt} canPrint={canCapturePayment} canReprint={session.user.permissions.includes("sales.receipt.reprint")} canPrintBrowser={canCapturePayment && session.user.permissions.includes("sales.receipt.read")} disabled={busy} onBusyChange={setBusy} />
             {error && <p className="form-error" role="alert">{error}</p>}
             <div className="modal-actions">{canManageDelivery && <button type="button" disabled={busy} onClick={() => void assignPaidReceipt()}>Asignar repartidor al pedido pagado</button>}<button className="access-primary" type="button" disabled={busy} onClick={() => void closeReceipt()}>Cerrar ticket</button></div>
           </section>

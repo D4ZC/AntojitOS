@@ -666,6 +666,9 @@ export class ProductionService {
   }
 
   async registerAgent(input: RegisterProductionAgentDto) {
+    if (input.centerCodes.length === 0 && (input.registerCodes?.length ?? 0) === 0) {
+      throw new BadRequestException("Asigna al menos un centro de producción o una caja al agente");
+    }
     const token = createOpaqueToken();
     const agentId = randomUUID();
     return this.database.transaction(async (transaction) => {

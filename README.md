@@ -41,6 +41,8 @@ El uso de cliente opcional y envío automático a cocina se describe en [`docs/p
 
 La administración de proveedores, cargos y pagos, y las comandas de reparto en el teléfono se describen en [`docs/phase-5a/ADMINISTRACION_Y_REPARTOS.md`](docs/phase-5a/ADMINISTRACION_Y_REPARTOS.md).
 
+La impresión de tickets de 80 mm en la Bixolon SRP-F310 por USB o Ethernet se configura en [`docs/phase-3/BIXOLON_SRP_F310.md`](docs/phase-3/BIXOLON_SRP_F310.md).
+
 La PWA queda en `http://localhost:8080`; la guía de operación y recuperación está en [`docs/phase-5a/EJECUCION_PILOTO.md`](docs/phase-5a/EJECUCION_PILOTO.md).
 
 En una PC nueva con Windows 11 x64, conservar la carpeta completa del proyecto y abrir
@@ -72,7 +74,7 @@ pnpm test:offline
 
 - `apps/pos`: PWA táctil con modo demostración y modo conectado al servidor local.
 - `apps/api`: API autoritativa local y migraciones PostgreSQL.
-- `apps/print-agent`: agente local de impresión con simulador y adaptador TCP ESC/POS.
+- `apps/print-agent`: impresión ESC/POS con simulador, conexión TCP y colas USB del sistema.
 - `packages/domain`: reglas de dominio independientes de la interfaz.
 - `docs/phase-0`: alcance, flujos, estados y permisos iniciales.
 - `docs/phase-1`: fundaciones del servidor local y seguridad.

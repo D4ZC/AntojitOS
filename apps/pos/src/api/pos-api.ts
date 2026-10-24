@@ -1,5 +1,6 @@
 import type { AccountingApi } from "../accounting";
 import type { DeliveryApi, DeliveryAssignment, DeliveryDriver, SharedDelivery } from "../delivery";
+import type { ReceiptPrintingApi } from "../ReceiptPrinting";
 import { createUuid } from "@antojit-os/domain";
 import type {
   AccountManagementOptions,
@@ -13,6 +14,8 @@ import type {
   PaymentMethod,
   Precheck,
   ProductionTicket,
+  ReceiptPrintingStatus,
+  ReceiptPrintResult,
   ServiceAccount,
   ServiceLayout,
   Session,
@@ -44,7 +47,7 @@ const errorMessage = (body: unknown): string => {
   return "No fue posible completar la operación";
 };
 
-export class PosApi implements AccountingApi, DeliveryApi {
+export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi {
   constructor(
     private readonly baseUrl: string,
     private accessToken?: string,
@@ -229,6 +232,18 @@ export class PosApi implements AccountingApi, DeliveryApi {
 
   receipt(receiptId: string): Promise<SalesReceipt> {
     return this.request(`/v1/sales/receipts/${receiptId}`);
+  }
+
+  receiptPrinting(receiptId: string): Promise<ReceiptPrintingStatus> {
+    return this.request(`/v1/sales/receipts/${receiptId}/printing`);
+  }
+
+  printReceipt(receiptId: string): Promise<ReceiptPrintResult> {
+    return this.request(`/v1/sales/receipts/${receiptId}/print`, {
+      method: "POST",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: {},
+    });
   }
 
   async recentReceipts(): Promise<SalesReceiptSummary[]> {

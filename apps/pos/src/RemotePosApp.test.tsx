@@ -283,6 +283,14 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   }),
   paymentMethods: vi.fn().mockResolvedValue(paymentMethods),
   checkoutAccount: vi.fn().mockResolvedValue(paidReceipt),
+  receipt: vi.fn().mockResolvedValue(paidReceipt),
+  receiptPrinting: vi.fn().mockResolvedValue({
+    receiptId: paidReceipt.id,
+    receiptStatus: "issued",
+    jobs: [],
+    routing: { registerCode: "MAIN", registerName: "Caja principal", configuredAgentCount: 0, onlineAgentCount: 0 },
+  }),
+  printReceipt: vi.fn().mockResolvedValue({ jobId: "job-1", receiptId: paidReceipt.id, status: "queued", created: true, requeued: false }),
   recentReceipts: vi.fn().mockResolvedValue([{
     id: paidReceipt.id,
     folio: paidReceipt.folio,
@@ -871,6 +879,11 @@ describe("POS conectado", () => {
     }));
     expect(await screen.findByRole("heading", { name: "Ticket T-000001" })).toBeInTheDocument();
     expect(screen.getByText("$3.80")).toBeInTheDocument();
+    await screen.findByText("Ticket sin envío registrado");
+    fireEvent.click(screen.getByRole("button", { name: "Imprimir ticket" }));
+    await waitFor(() => expect(api.printReceipt).toHaveBeenCalledWith(paidReceipt.id));
+    expect(api.checkoutAccount).toHaveBeenCalledTimes(1);
+    expect(api.reprintReceipt).not.toHaveBeenCalled();
   });
 
   it("abre el turno de caja antes del primer cobro", async () => {

@@ -21,6 +21,7 @@ export interface ProductionPayload {
 
 export interface ReceiptPayload {
   kind: "receipt" | "receipt_reprint";
+  receiptStatus?: "issued" | "cancelled" | "refunded";
   receipt: {
     id: string;
     folio: string;
@@ -29,22 +30,29 @@ export interface ReceiptPayload {
       tableName: string | null;
       reference: string | null;
       serviceType: "table" | "quick" | "takeaway";
+      customerName?: string | null;
+      totals?: { subtotalInCents: number; discountInCents: number; taxInCents: number };
       items: Array<{
         productName: string;
         quantity: number;
         preparationState: string;
         lineTotalInCents: number;
+        unitPriceInCents?: number;
+        note?: string | null;
+        modifiers?: Array<{ name: string; quantity: number }>;
       }>;
     };
     payments: Array<{
       method: { name: string };
       totalInCents: number;
       reference: string | null;
+      tenderedInCents?: number | null;
     }>;
     totals: {
       saleInCents: number;
       tipInCents: number;
       changeInCents: number;
+      collectedInCents?: number;
     };
   };
   reprint?: { reason: string; requestedBy: string };

@@ -1,7 +1,6 @@
 import { ApiProperty } from "@nestjs/swagger";
 import {
   ArrayMaxSize,
-  ArrayMinSize,
   IsArray,
   IsNotEmpty,
   IsOptional,
@@ -29,7 +28,6 @@ export class RegisterProductionAgentDto {
 
   @ApiProperty({ type: [String], example: ["KITCHEN", "BAR"] })
   @IsArray()
-  @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @IsString({ each: true })
   @Matches(/^[A-Z0-9_-]{2,24}$/, { each: true })

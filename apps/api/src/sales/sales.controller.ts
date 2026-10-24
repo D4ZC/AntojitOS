@@ -70,6 +70,27 @@ export class SalesController {
     return { ...result.body, idempotencyReplayed: result.replayed };
   }
 
+  @Get("receipts/:receiptId/printing")
+  @RequirePermissions("sales.payment.capture")
+  receiptPrinting(
+    @Param("receiptId", ParseUUIDPipe) receiptId: string,
+    @Req() request: RequestWithAuth,
+  ) {
+    return this.sales.receiptPrinting(receiptId, request.auth);
+  }
+
+  @Post("receipts/:receiptId/print")
+  @ApiHeader({ name: "idempotency-key", required: true })
+  @RequirePermissions("sales.payment.capture")
+  async printReceipt(
+    @Param("receiptId", ParseUUIDPipe) receiptId: string,
+    @Headers("idempotency-key") key: string | undefined,
+    @Req() request: RequestWithAuth,
+  ) {
+    const result = await this.sales.printReceipt(receiptId, requireIdempotencyKey(key), request.auth);
+    return { ...result.body, idempotencyReplayed: result.replayed };
+  }
+
   @Post("receipts/:receiptId/refunds")
   @ApiHeader({ name: "idempotency-key", required: true })
   @RequirePermissions("sales.refund.create")

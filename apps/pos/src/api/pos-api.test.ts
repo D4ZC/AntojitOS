@@ -12,6 +12,20 @@ afterEach(() => {
 });
 
 describe("PosApi", () => {
+  it("consulta el estado de impresión y pide el original sin repetir el cobro", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ receiptId: "receipt-1", jobs: [] }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new PosApi("/api", "access-token", () => "print-key");
+    await api.receiptPrinting("receipt-1");
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/sales/receipts/receipt-1/printing", {
+      method: "GET", headers: { authorization: "Bearer access-token" }, body: undefined,
+    });
+    await api.printReceipt("receipt-1");
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/sales/receipts/receipt-1/print", {
+      method: "POST", headers: { authorization: "Bearer access-token", "content-type": "application/json", "idempotency-key": "print-key" }, body: JSON.stringify({}),
+    });
+  });
+
   it("registra la terminal con el token de arranque y sin sesión", async () => {
     const fetchMock = vi.fn().mockResolvedValue(jsonResponse({
       id: "terminal-1",

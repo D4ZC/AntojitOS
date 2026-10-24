@@ -307,7 +307,7 @@ export interface CheckoutPayment {
 export interface SalesReceipt {
   id: string;
   folio: string;
-  status: "issued";
+  status: "issued" | "cancelled" | "refunded";
   issuedAt: string;
   shift: {
     id: string;
@@ -330,4 +330,35 @@ export interface SalesReceipt {
     collectedInCents: number;
     changeInCents: number;
   };
+}
+
+export type ReceiptPrintStatus = "queued" | "claimed" | "completed" | "failed" | "cancelled";
+
+export interface ReceiptPrintingStatus {
+  receiptId: string;
+  receiptStatus: SalesReceipt["status"];
+  jobs: Array<{
+    id: string;
+    kind: "receipt" | "receipt_reprint";
+    status: ReceiptPrintStatus;
+    attempts: number;
+    maxAttempts: number;
+    lastError: string | null;
+    createdAt: string;
+    completedAt: string | null;
+  }>;
+  routing: {
+    registerCode: string;
+    registerName: string;
+    configuredAgentCount: number;
+    onlineAgentCount: number;
+  };
+}
+
+export interface ReceiptPrintResult {
+  jobId: string;
+  receiptId: string;
+  status: ReceiptPrintStatus;
+  created: boolean;
+  requeued: boolean;
 }

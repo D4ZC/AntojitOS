@@ -47,7 +47,20 @@ interface SequenceRow extends DatabaseRow {
 }
 
 interface ReceiptRow extends DatabaseRow {
-  snapshot: unknown;
+  snapshot: Record<string, unknown> | string;
+  status: "issued" | "cancelled" | "refunded";
+}
+
+type ReceiptPrintStatus = "queued" | "claimed" | "completed" | "failed" | "cancelled";
+interface ReceiptPrintJobRow extends DatabaseRow {
+  id: string;
+  kind: "receipt" | "receipt_reprint";
+  status: ReceiptPrintStatus;
+  attempts: number;
+  max_attempts: number;
+  last_error: string | null;
+  created_at: Date | string;
+  completed_at: Date | string | null;
 }
 
 interface ReceiptSummaryRow extends DatabaseRow {
@@ -122,13 +135,14 @@ export class SalesService {
 
   async getReceipt(receiptId: string, actor: AuthContext) {
     const result = await this.database.query<ReceiptRow>(
-      `SELECT snapshot FROM sales_receipts
+      `SELECT snapshot, status FROM sales_receipts
         WHERE id = $1 AND site_id = $2`,
       [receiptId, actor.siteId],
     );
-    const receipt = result.rows[0]?.snapshot;
+    const receipt = result.rows[0];
     if (!receipt) throw new NotFoundException("Ticket inexistente");
-    return receipt;
+    const snapshot = typeof receipt.snapshot === "string" ? JSON.parse(receipt.snapshot) as Record<string, unknown> : receipt.snapshot;
+    return { ...snapshot, status: receipt.status };
   }
 
   async recentReceipts(actor: AuthContext) {
@@ -162,6 +176,117 @@ export class SalesService {
     };
   }
 
+  async receiptPrinting(receiptId: string, actor: AuthContext) {
+    const receipt = await this.database.query<{
+      register_code: string; register_name: string;
+      configured_agent_count: number; online_agent_count: number;
+      receipt_status: "issued" | "cancelled" | "refunded";
+    }>(
+      `SELECT registers.code AS register_code, registers.name AS register_name,
+              receipts.status AS receipt_status,
+              count(agents.id)::integer AS configured_agent_count,
+              count(agents.id) FILTER (
+                WHERE agents.last_seen_at >= now() - interval '60 seconds'
+              )::integer AS online_agent_count
+         FROM sales_receipts receipts
+         JOIN cash_shifts shifts ON shifts.id = receipts.shift_id AND shifts.site_id = receipts.site_id
+         JOIN cash_registers registers ON registers.id = shifts.register_id AND registers.site_id = receipts.site_id
+         LEFT JOIN production_agent_registers assignments ON assignments.register_id = registers.id
+         LEFT JOIN production_agents agents ON agents.id = assignments.agent_id
+           AND agents.site_id = receipts.site_id AND agents.status = 'active'
+        WHERE receipts.id = $1 AND receipts.site_id = $2
+        GROUP BY registers.id, receipts.status`,
+      [receiptId, actor.siteId],
+    );
+    const routing = receipt.rows[0];
+    if (!routing) throw new NotFoundException("Ticket inexistente");
+    const jobs = await this.database.query<ReceiptPrintJobRow>(
+      `SELECT id, kind, status, attempts, max_attempts, last_error, created_at, completed_at
+         FROM print_jobs WHERE receipt_id = $1 AND site_id = $2
+           AND kind IN ('receipt', 'receipt_reprint')
+        ORDER BY created_at DESC, id DESC`,
+      [receiptId, actor.siteId],
+    );
+    return {
+      receiptId,
+      receiptStatus: routing.receipt_status,
+      jobs: jobs.rows.map((job) => ({
+        id: job.id, kind: job.kind, status: job.status, attempts: job.attempts,
+        maxAttempts: job.max_attempts, lastError: job.last_error,
+        createdAt: new Date(job.created_at).toISOString(),
+        completedAt: job.completed_at ? new Date(job.completed_at).toISOString() : null,
+      })),
+      routing: {
+        registerCode: routing.register_code, registerName: routing.register_name,
+        configuredAgentCount: routing.configured_agent_count,
+        onlineAgentCount: routing.online_agent_count,
+      },
+    };
+  }
+
+  printReceipt(receiptId: string, key: string, actor: AuthContext) {
+    return this.idempotency.execute({
+      siteId: actor.siteId, scope: `sales.receipt.print:${receiptId}`, key,
+      requestHash: requestHash({ receiptId }),
+    }, async (transaction) => {
+      const receipt = (await transaction.query<ReceiptRow>(
+        `SELECT snapshot, status FROM sales_receipts WHERE id = $1 AND site_id = $2 FOR UPDATE`,
+        [receiptId, actor.siteId],
+      )).rows[0];
+      if (!receipt) throw new NotFoundException("Ticket inexistente");
+      const original = (await transaction.query<ReceiptPrintJobRow>(
+        `SELECT id, status FROM print_jobs
+          WHERE receipt_id = $1 AND site_id = $2 AND kind = 'receipt' FOR UPDATE`,
+        [receiptId, actor.siteId],
+      )).rows[0];
+      if (original?.status === "cancelled") {
+        throw new ConflictException("La impresión original está cancelada; solicita una reimpresión con motivo");
+      }
+      const jobId = original?.id ?? randomUUID();
+      const created = !original;
+      const requeued = original?.status === "failed";
+      if (created) {
+        await transaction.query(
+          `INSERT INTO print_jobs (id, site_id, receipt_id, kind, payload)
+            VALUES ($1, $2, $3, 'receipt', $4::jsonb)`,
+          [jobId, actor.siteId, receiptId, JSON.stringify({
+            kind: "receipt", receipt: receipt.snapshot, receiptStatus: receipt.status,
+          })],
+        );
+      } else if (requeued) {
+        // Keep the job identity and attempt history, granting another five
+        // attempts. Claimed jobs always keep their existing lease mechanism.
+        await transaction.query(
+          `UPDATE print_jobs SET status = 'queued', available_at = now(),
+              max_attempts = GREATEST(max_attempts, attempts + 5),
+              claimed_by_agent_id = NULL, claim_token_hash = NULL, lease_expires_at = NULL,
+              last_error = NULL, completed_at = NULL, updated_at = now(),
+              payload = jsonb_set(payload, '{receiptStatus}', to_jsonb($3::text), true)
+            WHERE id = $1 AND site_id = $2`,
+          [jobId, actor.siteId, receipt.status],
+        );
+      }
+      const body = {
+        jobId, receiptId,
+        status: created || requeued ? "queued" as const : original!.status,
+        created, requeued,
+      };
+      if (created || requeued) {
+        await this.audit.append(transaction, {
+          id: randomUUID(), siteId: actor.siteId, actorUserId: actor.userId,
+          terminalId: actor.terminalId,
+          action: requeued ? "sales.receipt.print_recovered" : "sales.receipt.print_requested",
+          entityType: "sales_receipt", entityId: receiptId, changes: body,
+        });
+        await this.outbox.enqueue(transaction, {
+          id: randomUUID(), siteId: actor.siteId, eventType: "print.job.queued",
+          aggregateType: "print_job", aggregateId: jobId, payload: body,
+        });
+      }
+      return { status: created || requeued ? 201 : 200, body };
+    });
+  }
+
   reprintReceipt(
     receiptId: string,
     input: ReprintReceiptDto,
@@ -177,14 +302,15 @@ export class SalesService {
       },
       async (transaction) => {
         const receiptResult = await transaction.query<ReceiptRow>(
-          `SELECT snapshot FROM sales_receipts
-            WHERE id = $1 AND site_id = $2`,
+          `SELECT snapshot, status FROM sales_receipts
+            WHERE id = $1 AND site_id = $2 FOR UPDATE`,
           [receiptId, actor.siteId],
         );
         const snapshot = receiptResult.rows[0]?.snapshot;
         if (!snapshot) throw new NotFoundException("Ticket inexistente");
         const jobId = randomUUID();
         const reason = input.reason.trim();
+        if (!reason) throw new BadRequestException("Captura el motivo de la reimpresión");
         await transaction.query(
           `INSERT INTO print_jobs (
              id, site_id, receipt_id, kind, payload
@@ -196,6 +322,7 @@ export class SalesService {
             JSON.stringify({
               kind: "receipt_reprint",
               receipt: snapshot,
+              receiptStatus: receiptResult.rows[0]!.status,
               reprint: { reason, requestedBy: actor.displayName },
             }),
           ],
@@ -552,7 +679,7 @@ export class SalesService {
             randomUUID(),
             actor.siteId,
             receiptId,
-            JSON.stringify({ kind: "receipt", receipt: body }),
+            JSON.stringify({ kind: "receipt", receipt: body, receiptStatus: "issued" }),
           ],
         );
 
