@@ -197,7 +197,7 @@ function Invoke-AntojitFinalMain {
         Write-Host "Comandos y errores: $env:ANTOJITOS_SESSION_LOG_PATH"
         Write-Host ("Sistema: {0}; PowerShell: {1}; proceso de {2} bits" -f [Environment]::OSVersion.VersionString, $PSVersionTable.PSVersion, ([IntPtr]::Size * 8))
         Write-Host "Origen: $script:AntojitEntryRoot"
-        if ($env:OS -ne 'Windows_NT') { throw 'Este script requiere Windows 11 de 64 bits.' }
+        if ($env:OS -ne 'Windows_NT') { throw 'Este script requiere Windows 10 22H2 o Windows 11 de 64 bits.' }
         if ($Options.Unattended -and $Options.Action -ne 'Start') {
             throw '-Unattended solo admite -Action Start. No se instalara ni actualizara sin una sesion interactiva.'
         }

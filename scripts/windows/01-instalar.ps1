@@ -1,7 +1,7 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-Instala y configura AntojitOS en una PC Windows 11 x64.
+Instala y configura AntojitOS en una PC Windows 10 22H2 o Windows 11 x64.
 .DESCRIPTION
 Ejecutar como administrador con la cuenta que operara la PC. Conserva secretos y
 datos existentes. Si WSL requiere reiniciar, devuelve 3010: reinicia Windows y

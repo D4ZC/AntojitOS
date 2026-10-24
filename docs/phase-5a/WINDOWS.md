@@ -15,7 +15,11 @@ Conservar **la carpeta completa del proyecto**: `final_script.cmd`, `final_scrip
 
 ## Preparar la computadora
 
-Usar Windows 11 de escritorio de 64 bits x64, actualizado, con una cuenta administradora, conexión a Internet para instalar y actualizar, y virtualización habilitada en BIOS/UEFI. No se admite ARM64. Windows PowerShell 5.1, incluido en Windows, es suficiente. El instalador descarga los instaladores oficiales y comprueba sus firmas y hashes; no depende de `winget`.
+Usar **Windows 10 22H2 de escritorio x64 (compilación 19045 o posterior)** o **Windows 11 de escritorio x64**, actualizado, con una cuenta administradora y conexión a Internet para instalar y actualizar. No se admiten Windows de 32 bits, ARM64 ni Windows Server. Windows PowerShell 5.1 de 64 bits, incluido en Windows, es suficiente. El instalador descarga los instaladores oficiales y comprueba sus firmas y hashes; no depende de `winget`.
+
+En la computadora con Windows 10, presionar `Win + R`, escribir `winver` y comprobar que indica **22H2** y **19045** o una compilación posterior. Si tiene una versión anterior, actualizar Windows 10 antes de instalar; no hace falta cambiar a Windows 11. Usar **el mismo `final_script.cmd` y la carpeta completa del proyecto** en cualquiera de los dos sistemas.
+
+La virtualización debe estar habilitada en BIOS/UEFI (Intel VT-x o AMD-V). Se puede consultar en **Administrador de tareas > Rendimiento > CPU > Virtualización**. WSL2 necesita esa función incluso en Windows 10 Home; no se requiere cambiar a la edición Pro.
 
 Se recomiendan 16 GB de RAM y SSD con al menos 30–50 GB libres. Son referencias prácticas; todavía no se han medido mínimos de hardware del proyecto. Conviene reservar una IP para la PC en el router, utilizar una red de confianza y proteger su alimentación con un UPS.
 
@@ -23,7 +27,9 @@ El destino predeterminado es `C:\Program Files\AntojitOS`. El código queda prot
 
 `final_script` solicita elevación cuando es necesaria. Usar siempre la **misma cuenta administradora de Windows**: esa cuenta es propietaria de la máquina WSL/Podman y de los datos. Si la elevación cambia de cuenta, el proceso se detiene. Otra cuenta o `SYSTEM` no dan acceso a la misma instalación.
 
-El instalador prepara Node.js 24, Git, Podman, el proveedor Compose y WSL2 cuando faltan. PostgreSQL 17, la API, la interfaz y el agente de impresión se ejecutan en contenedores. No es necesario instalar PostgreSQL manualmente.
+El instalador prepara Node.js 24, Git, Podman, el proveedor Compose y WSL2 cuando faltan. En Windows 10 descarga **Podman 5.8.9**, de la rama compatible con ese sistema; en Windows 11 puede descargar la versión estable actual. **Podman 6 requiere Windows 11**. WSL2 debe usar un runtime actualizado, además de las características opcionales de Windows. PostgreSQL 17, la API, la interfaz y el agente de impresión se ejecutan en contenedores. No es necesario instalar PostgreSQL manualmente.
+
+La guía oficial de [Podman 5.8.9 para Windows](https://github.com/podman-container-tools/podman/blob/v5.8.9/docs/tutorials/podman-for-windows.md#prerequisites) contempla Windows 10 y Windows 11 con WSL2. El mínimo de Windows 10 del instalador de AntojitOS es 22H2, aunque esa guía permita versiones anteriores.
 
 ## 1. Instalar y configurar
 
@@ -200,6 +206,10 @@ Si la instalación se detiene con `La URL del instalador de containers/podman no
 
 Extraer el proyecto completo actualizado en una carpeta de preparación nueva, abrir su `final_script.cmd` y elegir **1** con la misma cuenta de Windows. Se comprueban y reutilizan las dependencias ya instaladas, y se conserva la configuración y la base existentes. No es necesario volver a formatear ni borrar WSL, Podman o los datos. Las validaciones de repositorio, hash y firma del instalador permanecen activas.
 
+### Windows 10 ya tiene Podman 6 instalado
+
+El instalador detecta que Podman 6 no es compatible con Windows 10 y se detiene con un diagnóstico. No lo sustituye ni cambia sus máquinas o datos automáticamente. Antes de cambiar de versión, revisar si esa instalación contiene otros proyectos y conservar sus respaldos. Preparar Podman 5.8.9 compatible con Windows 10 y volver a abrir `final_script.cmd`, opción **1**, con la misma cuenta. No borrar máquinas WSL ni volúmenes para resolver esta incompatibilidad.
+
 ### Podman inicia, pero Compose no encuentra su canal
 
 Los mensajes `win-sshproxy.exe failed to start` y `failed to connect to the docker API at npipe:...` indican que falló el puente de Windows que utiliza Compose. `podman info` puede responder correctamente en ese estado. El código de salida 0 del auxiliar tampoco demuestra que haya levantado el canal.
@@ -216,7 +226,7 @@ El arranque corregido consulta `ls --format json` directamente al proveedor Comp
 
 Si la conexión continúa fallando, el inicio termina con el error de Compose y el detalle de recuperación. Conservar los archivos `win-sshproxy-*.stderr.log` de esa ejecución y consultar el Visor de eventos, **Registros de Windows > Aplicación**, origen **.NET Runtime**, en la hora del fallo. No recrear la máquina ni cambiarla a rootful como reparación: esos cambios seleccionan otro almacenamiento.
 
-La recuperación del auxiliar utiliza el protocolo de argumentos de Podman 6.1.4 y requiere comprobarse en la PC Windows afectada; las pruebas automatizadas con mocks verifican la lógica y no sustituyen el reinicio real.
+La recuperación del auxiliar utiliza el protocolo de argumentos de Podman y debe comprobarse con la versión instalada en la PC afectada. Las pruebas automatizadas incluyen una respuesta de Podman 6.1.4 y verifican la lógica con mocks; la comprobación física con Podman 5 en Windows 10 y con Podman 6 en Windows 11 sigue pendiente.
 
 ## Recuperación y respaldos
 
@@ -230,4 +240,4 @@ No se restaura la base ni se retrocede el código automáticamente. Si el fallo 
 
 Los respaldos contienen información del negocio y la copia de `.env.pilot` contiene secretos. Sus carpetas quedan restringidas al propietario, administradores y `SYSTEM`; modificar el código instalado requiere una sesión elevada. Conservar una copia segura en otra unidad: un respaldo en el mismo disco no protege ante una falla de la PC. Los respaldos de actualización tampoco reemplazan los respaldos diarios después del cierre; el procedimiento general está en [EJECUCION_PILOTO.md](EJECUCION_PILOTO.md).
 
-Queda pendiente validar en una PC Windows real la instalación desde cero, reinicio, tarea de arranque, acceso por LAN, actualización con datos y la impresora del negocio. Las comprobaciones de sintaxis y pruebas automatizadas no sustituyen ese ensayo.
+Queda pendiente validar en computadoras reales con **Windows 10 22H2 x64 y Windows 11 x64** la instalación desde cero, reinicio, tarea de arranque, acceso por LAN, actualización con datos y la impresora del negocio. Las comprobaciones de sintaxis y pruebas automatizadas no sustituyen esos ensayos.

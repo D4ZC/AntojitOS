@@ -70,22 +70,26 @@ function Get-AntojitInstallerLogPath {
     return Join-Path $directory ('{0}-{1}-{2}.{3}' -f $name, (Get-Date -Format 'yyyyMMdd-HHmmss'), [Guid]::NewGuid().ToString('N').Substring(0, 8), $Suffix)
 }
 
+function Get-AntojitWindowsBuild {
+    $windows = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
+    return [int]$windows.CurrentBuildNumber
+}
+
 function Assert-AntojitWindows {
     if ($env:OS -ne 'Windows_NT') {
-        throw 'Este instalador requiere Windows 11 x64.'
+        throw 'Este instalador requiere Windows 10 22H2 o Windows 11 x64.'
     }
     $architecture = $env:PROCESSOR_ARCHITECTURE
     if ($env:PROCESSOR_ARCHITEW6432) { $architecture = $env:PROCESSOR_ARCHITEW6432 }
     if ($architecture -ne 'AMD64' -or -not [Environment]::Is64BitProcess) {
         throw 'Se requiere Windows x64 y PowerShell de 64 bits. No se admite ARM64.'
     }
-    $windows = Get-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -ErrorAction Stop
-    if ([int]$windows.CurrentBuildNumber -lt 22000) {
-        throw 'Se requiere Windows 11 (compilacion 22000 o posterior). Actualiza Windows antes de continuar.'
+    if ((Get-AntojitWindowsBuild) -lt 19045) {
+        throw 'Se requiere Windows 10 22H2 (compilacion 19045 o posterior) o Windows 11. Actualiza Windows 10 a 22H2 antes de continuar.'
     }
     $operatingSystem = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
     if ($operatingSystem.ProductType -ne 1) {
-        throw 'Este instalador admite Windows 11 de escritorio; Windows Server requiere otro despliegue.'
+        throw 'Este instalador admite Windows 10/11 de escritorio; Windows Server requiere otro despliegue.'
     }
 }
 
@@ -235,9 +239,16 @@ function Get-AntojitPodman {
     foreach ($candidate in @(Get-AntojitExecutableCandidates -Name 'podman.exe' -FallbackPaths $fallbacks)) {
         try {
             $result = Invoke-AntojitNative -FilePath $candidate -Arguments @('--version') -TimeoutSeconds 30
-            if ($result.StdOut.Trim() -match '^podman version \d+\.') { return $candidate }
+            if ($result.StdOut.Trim() -notmatch '^podman version (?<version>\d+\.\d+\.\d+)(?:[-+].*)?$') { continue }
+            $podmanVersion = [version]$Matches.version
         }
         catch { continue }
+        # Do not treat an incompatible installation as missing: installing an
+        # older Podman over it could affect another application's WSL machines.
+        if ($env:OS -eq 'Windows_NT' -and (Get-AntojitWindowsBuild) -lt 22000 -and $podmanVersion.Major -ge 6) {
+            throw "Windows 10 requiere Podman 5.x; se encontro Podman $podmanVersion en $candidate. Este instalador usa Podman 5.8.9 en Windows 10 y no degrada instalaciones existentes. Revisa esa instalacion antes de continuar; conserva sus maquinas y datos."
+        }
+        return $candidate
     }
     return $null
 }
@@ -346,6 +357,22 @@ function Get-AntojitLatestRelease {
     return $release
 }
 
+function Get-AntojitPodmanRelease {
+    if ((Get-AntojitWindowsBuild) -ge 22000) {
+        return Get-AntojitLatestRelease -Repository 'podman-container-tools/podman'
+    }
+    # Podman 6 requires Windows 11. Keep Windows 10 on an explicit 5.x release
+    # instead of following `latest` into an unsupported Windows dependency.
+    $tag = 'v5.8.9'
+    Write-AntojitDiagnostic -Message "[RELEASE] Windows 10: seleccionando Podman $tag compatible con WSL2."
+    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/podman-container-tools/podman/releases/tags/$tag" -Headers @{
+        Accept = 'application/vnd.github+json'
+        'X-GitHub-Api-Version' = '2022-11-28'
+    } -UserAgent 'AntojitOS-Windows-Setup' -TimeoutSec 60 -ErrorAction Stop
+    if ($release.tag_name -ne $tag) { throw "La publicacion de Podman no corresponde a la version compatible $tag." }
+    return $release
+}
+
 function Get-AntojitReleaseAsset {
     param($Release, [string]$NamePattern, [string]$Repository)
     $assets = @($Release.assets | Where-Object { $_.name -match $NamePattern })
@@ -428,9 +455,11 @@ function Initialize-AntojitWsl {
     $wslPath = $wslCommands[0]
     $version = Invoke-AntojitNative -FilePath $wslPath -Arguments @('--version') -AllowNonZeroExit -TimeoutSeconds 60
     if ($version.ExitCode -ne 0) {
-        Write-AntojitDiagnostic -Message '[WSL] Instalando o actualizando el runtime de WSL2 (sin instalar Ubuntu)...'
-        $updated = Invoke-AntojitNative -FilePath $wslPath -Arguments @('--update', '--web-download') -AllowedExitCodes @(0, 3010, 1641)
-        if ($updated.ExitCode -ne 0) { Stop-AntojitForRestart 'El runtime de WSL2 requiere reiniciar.' }
+        # Windows 10 can still have the inbox WSL executable without the modern
+        # runtime. Install that runtime explicitly, without adding a distribution.
+        Write-AntojitDiagnostic -Message '[WSL] Instalando el runtime actualizado de WSL2 (sin instalar Ubuntu)...'
+        $installed = Invoke-AntojitNative -FilePath $wslPath -Arguments @('--install', '--no-distribution', '--web-download') -AllowedExitCodes @(0, 3010, 1641)
+        if ($installed.ExitCode -ne 0) { Stop-AntojitForRestart 'El runtime de WSL2 requiere reiniciar.' }
         $null = Invoke-AntojitNative -FilePath $wslPath -Arguments @('--version') -TimeoutSeconds 60
     }
     $defaultVersion = Get-ItemProperty -LiteralPath 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Lxss' -Name DefaultVersion -ErrorAction SilentlyContinue
@@ -492,7 +521,7 @@ function Install-AntojitDependencies {
         $podmanPath = Get-AntojitPodman
         if (-not $podmanPath) {
             Write-AntojitDiagnostic -Message '[DEPENDENCY] Instalando Podman CLI x64...'
-            $release = Get-AntojitLatestRelease -Repository 'podman-container-tools/podman'
+            $release = Get-AntojitPodmanRelease
             if (@($release.assets | Where-Object { $_.name -eq 'podman-installer-windows-amd64.msi' }).Count -gt 0) {
                 $asset = Get-AntojitReleaseAsset -Release $release -NamePattern '^podman-installer-windows-amd64\.msi$' -Repository 'podman-container-tools/podman'
             }

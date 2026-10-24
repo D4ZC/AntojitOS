@@ -290,8 +290,8 @@ function Repair-AntojitPodmanProxy {
     $logPath = Get-AntojitLogPath
     $logDirectory = if ($logPath) { Split-Path -Parent $logPath } else { $stateDirectory }
     $logBase = Join-Path $logDirectory ('win-sshproxy-' + [guid]::NewGuid().ToString('N'))
-    # Podman 6.1.4 / gvisor-tap-vsock 0.9.0 positional protocol. Forward only
-    # this machine's pipe; global docker_engine and Unix sockets are unnecessary.
+    # Podman 5.8.9 / gvisor-tap-vsock 0.8.9 and Podman 6.1.4 / 0.9.0 share
+    # this positional protocol. Forward only this machine's local pipe.
     # Preserve Podman's state directory so `machine stop` can stop this proxy too.
     $arguments = @($MachineName, $stateDirectory, ('npipe://' + $pipe.Replace('\', '/')),
         ('ssh://{0}@localhost:{1}/run/user/1000/podman/podman.sock' -f $ssh.RemoteUsername, $ssh.Port), [string]$ssh.IdentityPath)

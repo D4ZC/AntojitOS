@@ -59,9 +59,7 @@ Describe 'Dependency detection and reuse' {
                 $script:AntojitTestPodmanChecks++
                 if ($script:AntojitTestPodmanChecks -gt 1) { 'C:\podman\podman.exe' }
             }
-            Mock Get-AntojitLatestRelease {
-                param($Repository)
-                if ($Repository -ne 'podman-container-tools/podman') { throw 'Unexpected dependency repository.' }
+            Mock Get-AntojitPodmanRelease {
                 [pscustomobject]@{ assets = @([pscustomobject]@{
                     name = 'podman-5.6.2-setup.exe'
                     browser_download_url = 'https://github.com/podman-container-tools/podman/releases/download/v5.6.2/podman-5.6.2-setup.exe'
@@ -77,7 +75,7 @@ Describe 'Dependency detection and reuse' {
 
             $result = Install-AntojitDependencies -ToolsDirectory $tools
             $result.PodmanPath | Should -Be 'C:\podman\podman.exe'
-            Should -Invoke Get-AntojitLatestRelease -Times 1 -Exactly -ParameterFilter { $Repository -eq 'podman-container-tools/podman' }
+            Should -Invoke Get-AntojitPodmanRelease -Times 1 -Exactly
             Should -Invoke Save-AntojitDownload -Times 1 -Exactly -ParameterFilter {
                 $Uri -eq 'https://github.com/podman-container-tools/podman/releases/download/v5.6.2/podman-5.6.2-setup.exe'
             }
