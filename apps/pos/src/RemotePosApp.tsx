@@ -1,5 +1,6 @@
-import { type FormEvent, useEffect, useMemo, useState } from "react";
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountingPanel } from "./AccountingPanel";
+import { CatalogPricesEditor, type CatalogPricingApi } from "./CatalogPricesEditor";
 import type { AccountingApi } from "./accounting";
 import { DeliveryPanel } from "./DeliveryPanel";
 import type { DeliveryApi } from "./delivery";
@@ -36,7 +37,7 @@ import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
 
 const TERMINAL_STORAGE_KEY = "antojit-os.terminal.v1";
 
-export interface RemoteApi extends SeasonalMenuApi, AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
+export interface RemoteApi extends SeasonalMenuApi, CatalogPricingApi, AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
   setAccessToken(accessToken?: string): void;
   registerTerminal(input: {
     bootstrapToken: string;
@@ -233,6 +234,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [error, setError] = useState<string | null>(null);
   const [builder, setBuilder] = useState<{ category: CatalogCategory; product: CatalogProduct } | null>(null);
   const [seasonalEditorOpen, setSeasonalEditorOpen] = useState(false);
+  const [pricesEditorOpen, setPricesEditorOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<RemoteOrderItem | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
@@ -283,22 +285,57 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     kind: "reprint" | "cancellation" | "refund";
   } | null>(null);
   const [receiptActionReason, setReceiptActionReason] = useState("");
+  const catalogRequest = useRef({ id: 0, authorized: false, mounted: true });
+
+  useEffect(() => {
+    catalogRequest.current.mounted = true;
+    return () => {
+      catalogRequest.current.mounted = false;
+      catalogRequest.current.id += 1;
+    };
+  }, [api]);
+
+  const refreshCatalog = useCallback(async () => {
+    if (!catalogRequest.current.authorized || !catalogRequest.current.mounted) return;
+    const requestId = ++catalogRequest.current.id;
+    const nextCatalog = await api.catalog();
+    const current = catalogRequest.current;
+    if (!current.mounted || !current.authorized || current.id !== requestId) return;
+    setCatalog(nextCatalog);
+    setActiveCategoryId((selected) =>
+      selected && nextCatalog.some((category) => category.id === selected)
+        ? selected
+        : nextCatalog[0]?.id ?? null,
+    );
+  }, [api]);
 
   const loadServiceData = async () => {
-    const [nextCatalog, nextLayout, nextCounterAccounts] = await Promise.all([
-      api.catalog(),
+    const [, nextLayout, nextCounterAccounts] = await Promise.all([
+      refreshCatalog(),
       api.serviceLayout(),
       api.openCounterAccounts(),
     ]);
-    setCatalog(nextCatalog);
     setLayout(nextLayout);
     setOpenCounterAccounts(nextCounterAccounts);
-    setActiveCategoryId((current) =>
-      current && nextCatalog.some((category) => category.id === current)
-        ? current
-        : nextCatalog[0]?.id ?? null,
-    );
   };
+
+  // Mantiene los precios al día sin reemplazar la cuenta ni los borradores de captura.
+  useEffect(() => {
+    if (!session || busy || builder || seasonalEditorOpen || pricesEditorOpen) return;
+    let active = true;
+    const refreshVisibleCatalog = () => {
+      if (active && document.visibilityState === "visible") void refreshCatalog().catch(() => undefined);
+    };
+    const poll = window.setInterval(refreshVisibleCatalog, 15_000);
+    window.addEventListener("focus", refreshVisibleCatalog);
+    document.addEventListener("visibilitychange", refreshVisibleCatalog);
+    return () => {
+      active = false;
+      window.clearInterval(poll);
+      window.removeEventListener("focus", refreshVisibleCatalog);
+      document.removeEventListener("visibilitychange", refreshVisibleCatalog);
+    };
+  }, [session, busy, builder, seasonalEditorOpen, pricesEditorOpen, refreshCatalog]);
 
   const refreshAccount = async (accountId: string) => {
     const [nextAccount, nextLayout] = await Promise.all([
@@ -395,10 +432,13 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         pin: String(form.get("pin") ?? ""),
       });
       api.setAccessToken(nextSession.accessToken);
+      catalogRequest.current.authorized = true;
       await loadServiceData();
       setSession(nextSession);
       setNotice("Sesión iniciada. Selecciona el tipo de servicio.");
     } catch (loginError) {
+      catalogRequest.current.authorized = false;
+      catalogRequest.current.id += 1;
       api.setAccessToken(undefined);
       setError(messageFor(loginError));
     } finally {
@@ -407,6 +447,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   };
 
   const forgetTerminal = () => {
+    catalogRequest.current.authorized = false;
+    catalogRequest.current.id += 1;
     storage.removeItem(TERMINAL_STORAGE_KEY);
     api.setAccessToken(undefined);
     setTerminal(null);
@@ -429,11 +471,14 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
       }
       setBusy(false);
     }
+    catalogRequest.current.authorized = false;
+    catalogRequest.current.id += 1;
     api.setAccessToken(undefined);
     setSession(null);
     setAccount(null);
     setOpenCounterAccounts([]);
     setCatalog([]);
+    setPricesEditorOpen(false);
     setLayout(null);
     setError(null);
     setManagementOpen(false);
@@ -450,6 +495,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setBusy(true);
     setError(null);
     try {
+      await refreshCatalog();
       if (table.accountId && table.accountCount > 1) {
         const choices = await api.tableAccounts(table.id);
         setAccountChoices(choices);
@@ -475,6 +521,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setBusy(true);
     setError(null);
     try {
+      await refreshCatalog();
       await refreshAccount(accountId);
       setAccountChoices([]);
       setNotice("Cuenta actualizada");
@@ -489,6 +536,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setBusy(true);
     setError(null);
     try {
+      await refreshCatalog();
       const opened = await api.openAccount({ serviceType, guestCount });
       const openedAccount = await refreshAccount(opened.id);
       if (schedule) editDetails(openedAccount, true);
@@ -1265,6 +1313,16 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
 
   const canManageAccounting = session.user.permissions.includes("accounting.manage");
   const canManageDelivery = session.user.permissions.includes("delivery.manage");
+  const canManageCatalog = session.user.permissions.includes("catalog.product.manage");
+  const pricesEditor = pricesEditorOpen && canManageCatalog && (
+    <CatalogPricesEditor
+      api={api}
+      categories={catalog}
+      initialCategoryId={activeCategoryId ?? undefined}
+      onChanged={refreshCatalog}
+      onClose={() => setPricesEditorOpen(false)}
+    />
+  );
   if (accountingOpen && canManageAccounting) {
     return <main className="service-shell"><AccountingPanel api={api} onClose={() => setAccountingOpen(false)} /></main>;
   }
@@ -1281,6 +1339,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <div className="service-selector-heading">
             <div><span className="eyebrow">Nuevo servicio</span><h1 id="service-title">Selecciona una mesa</h1></div>
             <div className="service-heading-actions">
+              {canManageCatalog && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => setPricesEditorOpen(true)}>Precios del menú</button>}
               {canManageAccounting && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => setAccountingOpen(true)}>Contabilidad y proveedores</button>}
               {canManageDelivery && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => { setDeliveryAccount(null); setDeliveryOpen(true); }}>Repartos</button>}
               {canManageCash && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => void openCashPanel()}>Caja y corte</button>}
@@ -1337,6 +1396,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             </section>
           ))}
         </section>
+        {pricesEditor}
         {accountChoices.length > 0 && (
           <div className="modal-backdrop" role="presentation">
             <section className="touch-modal account-picker" role="dialog" aria-modal="true" aria-labelledby="account-picker-title">
@@ -1497,7 +1557,6 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const canDiscount = session.user.permissions.includes("service.account.discount");
   const canCreatePrecheck = session.user.permissions.includes("service.precheck.create");
   const canCapturePayment = session.user.permissions.includes("sales.payment.capture");
-  const canManageCatalog = session.user.permissions.includes("catalog.product.manage");
   const seasonalCategory = seasonalEditorOpen
     ? catalog.find((category) => category.id === activeCategory?.id && category.seasonal)
     : undefined;
@@ -1561,6 +1620,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <div className="section-heading">
             <div><span className="eyebrow">Menú</span><h1 id="menu-title">{activeCategory?.name ?? "Productos"}</h1></div>
             {busy && <span className="working-pill" role="status">Actualizando…</span>}
+            {canManageCatalog && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => setPricesEditorOpen(true)}>Precios del menú</button>}
             {activeCategory?.seasonal && canManageCatalog && <button className="cash-panel-button" type="button" disabled={busy} onClick={() => setSeasonalEditorOpen(true)}>Editar platillos</button>}
           </div>
           <div className="product-grid">
@@ -1857,6 +1917,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         />
       )}
 
+      {pricesEditor}
       {seasonalCategory && (
         <SeasonalMenuEditor
           api={api}

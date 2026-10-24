@@ -356,8 +356,8 @@ export const applyPilotCatalog = async (
   transaction: DatabaseSession,
   input: { siteId: string; kitchenId: string; taxRuleId: string },
 ): Promise<void> => {
-  // Los platillos de temporada los administra el restaurante desde el POS;
-  // recargar el catálogo no debe revertir sus nombres, precios ni disponibilidad.
+  // El restaurante administra todos los precios desde el POS. Los platillos de
+  // temporada también conservan su nombre y disponibilidad al recargar el catálogo.
   const fixedProducts = `SELECT products.id
       FROM products
       JOIN product_categories categories ON categories.id = products.category_id
@@ -370,8 +370,9 @@ export const applyPilotCatalog = async (
   await transaction.query(
     `UPDATE product_prices
         SET active = false
-      WHERE site_id = $1 AND product_id IN (${fixedProducts})`,
-    [input.siteId],
+      WHERE site_id = $1 AND product_id IN (${fixedProducts})
+        AND NOT (product_id = ANY($2::uuid[]))`,
+    [input.siteId, pilotCatalog.products.map((product) => product.id)],
   );
   await transaction.query(
     `UPDATE products
@@ -489,12 +490,20 @@ export const applyPilotCatalog = async (
     await transaction.query(
       `INSERT INTO product_prices (
          id, site_id, product_id, price_list_code, price_in_cents, active
-       ) VALUES ($1, $2, $3, 'DEFAULT', $4, true)
-       ON CONFLICT (id) DO UPDATE SET
-         price_in_cents = EXCLUDED.price_in_cents,
-         active = true
-       WHERE NOT $5::boolean`,
-      [product.priceId, input.siteId, product.id, product.priceInCents, seasonal],
+       )
+       SELECT CASE
+                WHEN EXISTS (SELECT 1 FROM product_prices WHERE id = $1::uuid)
+                  THEN gen_random_uuid()
+                ELSE $1::uuid
+              END,
+              $2, $3, 'DEFAULT', $4, true
+        WHERE NOT EXISTS (
+          SELECT 1 FROM product_prices
+           WHERE site_id = $2 AND product_id = $3
+             AND price_list_code = 'DEFAULT' AND active
+        )
+       ON CONFLICT DO NOTHING`,
+      [product.priceId, input.siteId, product.id, product.priceInCents],
     );
   }
 
@@ -555,7 +564,6 @@ export const applyPilotCatalog = async (
            modifier_group_id = EXCLUDED.modifier_group_id,
            code = EXCLUDED.code,
            name = EXCLUDED.name,
-           price_delta_in_cents = EXCLUDED.price_delta_in_cents,
            display_order = EXCLUDED.display_order,
            active = true,
            available = true`,

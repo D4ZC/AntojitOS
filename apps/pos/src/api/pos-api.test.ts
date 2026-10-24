@@ -12,6 +12,27 @@ afterEach(() => {
 });
 
 describe("PosApi", () => {
+  it("guarda precios del menú y recargos con sesión, concurrencia e idempotencia", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const createKey = vi.fn().mockReturnValueOnce("product-price-key").mockReturnValueOnce("modifier-price-key");
+    const api = new PosApi("/api", "admin-session", createKey);
+
+    await api.updateProductPrice("product-1", { expectedVersion: 2, priceInCents: 4525 });
+    await api.updateModifierPrice("extra-1", { expectedPriceDeltaInCents: 2000, priceDeltaInCents: 2500 });
+
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/v1/catalog/products/product-1/price", {
+      method: "PATCH",
+      headers: { authorization: "Bearer admin-session", "content-type": "application/json", "idempotency-key": "product-price-key" },
+      body: JSON.stringify({ expectedVersion: 2, priceInCents: 4525 }),
+    });
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/v1/catalog/modifiers/extra-1/price", {
+      method: "PATCH",
+      headers: { authorization: "Bearer admin-session", "content-type": "application/json", "idempotency-key": "modifier-price-key" },
+      body: JSON.stringify({ expectedPriceDeltaInCents: 2000, priceDeltaInCents: 2500 }),
+    });
+  });
+
   it("consulta las comandas de la cuenta e imprime con sesión e idempotencia", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ tickets: [{ id: "ticket-1" }] }))

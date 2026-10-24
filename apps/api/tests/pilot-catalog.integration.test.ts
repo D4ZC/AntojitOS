@@ -22,6 +22,35 @@ afterEach(async () => {
 });
 
 describe("catálogo real del piloto", () => {
+  const prepare = async () => {
+    database = new TestDatabase();
+    await runMigrations(database);
+    await database.query(
+      `INSERT INTO sites (id, code, name) VALUES ($1, 'PILOT', 'Piloto')`,
+      [ids.site],
+    );
+    await database.query(
+      `INSERT INTO production_centers (id, site_id, code, name)
+       VALUES ($1, $2, 'KITCHEN', 'Cocina')`,
+      [ids.kitchen, ids.site],
+    );
+    await database.query(
+      `INSERT INTO tax_rules (
+         id, site_id, code, name, rate_basis_points, price_includes_tax
+       ) VALUES ($1, $2, 'IVA-16', 'IVA 16%', 1600, true)`,
+      [ids.tax, ids.site],
+    );
+    const load = () => database!.transaction((transaction) =>
+      applyPilotCatalog(transaction, {
+        siteId: ids.site,
+        kitchenId: ids.kitchen,
+        taxRuleId: ids.tax,
+      }),
+    );
+    await load();
+    return { load, catalog: () => new CatalogService(database!).catalog(ids.site) };
+  };
+
   it("reemplaza el menú de demostración y conserva una carga idempotente", async () => {
     database = new TestDatabase();
     await runMigrations(database);
@@ -216,6 +245,101 @@ describe("catálogo real del piloto", () => {
       code: "SOPE-LEGACY-00000300",
       name: "Sope de demostración",
     });
+  });
+
+  it("conserva precios administrativos de productos fijos y extras al recargar", async () => {
+    const { load, catalog } = await prepare();
+    const flauta = pilotCatalog.products.find((product) => product.code === "FLAUTA")!;
+    const currentPriceId = "00000000-0000-4000-8000-000000009901";
+    await database!.query(
+      `UPDATE product_prices SET active = false WHERE product_id = $1`,
+      [flauta.id],
+    );
+    await database!.query(
+      `INSERT INTO product_prices (id, site_id, product_id, price_in_cents)
+       VALUES ($1, $2, $3, 4200)`,
+      [currentPriceId, ids.site, flauta.id],
+    );
+    await database!.query(
+      `UPDATE modifiers SET price_delta_in_cents = 2750
+        WHERE site_id = $1 AND code = 'POZOLE-HUESO-EXTRA'`,
+      [ids.site],
+    );
+
+    await load();
+    await load();
+
+    const products = (await catalog()).categories.flatMap((category) => category.products);
+    expect(products.find((product) => product.id === flauta.id)?.priceInCents).toBe(4200);
+    expect(products.find((product) => product.code === "POZOLE-CHICO")
+      ?.modifierGroups.flatMap((group) => group.options)
+      .find((option) => option.name === "Hueso extra")?.priceDeltaInCents).toBe(2750);
+    const prices = await database!.query<{
+      id: string;
+      price_in_cents: number;
+      active: boolean;
+    }>(
+      `SELECT id, price_in_cents, active FROM product_prices
+        WHERE product_id = $1 ORDER BY active`,
+      [flauta.id],
+    );
+    expect(prices.rows).toEqual([
+      { id: flauta.priceId, price_in_cents: 3500, active: false },
+      { id: currentPriceId, price_in_cents: 4200, active: true },
+    ]);
+  });
+
+  it("asigna defaults nuevos sin reactivar un precio histórico ni alterar otras listas", async () => {
+    const { load, catalog } = await prepare();
+    const flauta = pilotCatalog.products.find((product) => product.code === "FLAUTA")!;
+    await database!.query(
+      `UPDATE product_prices SET active = false WHERE product_id = $1`,
+      [flauta.id],
+    );
+    await database!.query(
+      `INSERT INTO product_prices (id, site_id, product_id, price_list_code, price_in_cents)
+       VALUES ('00000000-0000-4000-8000-000000009902', $1, $2, 'WHOLESALE', 3000)`,
+      [ids.site, flauta.id],
+    );
+    await database!.query(
+      `DELETE FROM modifiers WHERE site_id = $1 AND code = 'FLAUTA-CHICHARRON'`,
+      [ids.site],
+    );
+
+    await load();
+    await load();
+
+    const prices = await database!.query<{
+      id: string;
+      price_list_code: string;
+      price_in_cents: number;
+      active: boolean;
+    }>(
+      `SELECT id, price_list_code, price_in_cents, active FROM product_prices
+        WHERE product_id = $1 ORDER BY active, price_list_code`,
+      [flauta.id],
+    );
+    expect(prices.rows).toEqual([
+      { id: flauta.priceId, price_list_code: "DEFAULT", price_in_cents: 3500, active: false },
+      {
+        id: expect.any(String),
+        price_list_code: "DEFAULT",
+        price_in_cents: 3500,
+        active: true,
+      },
+      {
+        id: "00000000-0000-4000-8000-000000009902",
+        price_list_code: "WHOLESALE",
+        price_in_cents: 3000,
+        active: true,
+      },
+    ]);
+    expect(prices.rows[1]?.id).not.toBe(flauta.priceId);
+    const products = (await catalog()).categories.flatMap((category) => category.products);
+    expect(products.find((product) => product.id === flauta.id)
+      ?.modifierGroups.flatMap((group) => group.options)
+      .find((option) => option.name === "Chicharrón"))
+      .toMatchObject({ priceDeltaInCents: 0, available: true });
   });
 });
 

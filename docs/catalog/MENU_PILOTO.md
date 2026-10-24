@@ -99,5 +99,13 @@ El administrador puede cambiar nombre y precio, marcar "Hoy sí / Hoy no" y agre
 
 - Al aplicar el catálogo, los productos anteriores se desactivan; no se borran las ventas ni las comandas históricas.
 - Los productos de categorías de temporada no se desactivan ni se sobrescriben al recargar.
-- Los cambios de precio de temporada conservan el precio anterior inactivo y quedan en la bitácora de auditoría.
+- Los precios personalizados de productos y recargos se conservan al recargar el catálogo. Los cambios de precio base conservan el precio anterior inactivo; todos los cambios de precio quedan en la bitácora de auditoría.
 - La tostada extra y el caldo extra se manejan como productos para permitir cualquier cantidad.
+
+## Administración de precios
+
+- Con sesión de administrador, abre **Precios del menú** desde la selección de mesas o desde cualquier categoría de la comanda.
+- Selecciona la categoría y modifica el precio del producto o el recargo de sus opciones y extras. Los importes se capturan en pesos, admiten centavos y se guardan con el botón de cada fila.
+- Una opción compartida tiene el mismo recargo en todos los productos que la usan; el panel muestra esos productos. Los artículos ya capturados conservan sus precios y el importe nuevo se aplica al agregar artículos después del cambio.
+- Las tablets actualizan el catálogo al abrir un servicio, al recuperar el foco y cada 15 segundos mientras están visibles y no se está capturando o editando. Los nombres de los botes de pozole reflejan su precio base más el adicional de la presentación; los tickets anteriores conservan sus importes originales.
+- Si otra terminal cambia el mismo precio mientras editas, se informa el conflicto para recargar los datos antes de guardar de nuevo. Los meseros sin permiso de administración del catálogo no pueden editar precios.

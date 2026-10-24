@@ -4,6 +4,7 @@ import {
   type DatabasePort,
   type DatabaseRow,
 } from "../database/database.port.js";
+import { modifierPriceLabel } from "./modifier-price-label.js";
 
 interface CategoryRow extends DatabaseRow {
   id: string;
@@ -38,6 +39,7 @@ interface ModifierRow extends DatabaseRow {
   minimum_selections: number;
   maximum_selections: number;
   modifier_id: string;
+  modifier_code: string;
   modifier_name: string;
   price_delta_in_cents: number;
   available: boolean;
@@ -96,6 +98,7 @@ export class CatalogService {
            groups.minimum_selections,
            groups.maximum_selections,
            modifiers.id AS modifier_id,
+           modifiers.code AS modifier_code,
            modifiers.name AS modifier_name,
            modifiers.price_delta_in_cents,
            modifiers.available
@@ -123,7 +126,10 @@ export class CatalogService {
       }>;
     }>>();
 
+    const productsById = new Map(products.rows.map((product) => [product.id, product]));
     for (const row of modifiers.rows) {
+      const product = productsById.get(row.product_id);
+      if (!product) continue;
       const groups = modifiersByProduct.get(row.product_id) ?? new Map();
       const group = groups.get(row.group_id) ?? {
         id: row.group_id,
@@ -134,7 +140,9 @@ export class CatalogService {
       };
       group.options.push({
         id: row.modifier_id,
-        name: row.modifier_name,
+        name: modifierPriceLabel(
+          row.modifier_code, row.modifier_name, product.price_in_cents, row.price_delta_in_cents,
+        ),
         priceDeltaInCents: row.price_delta_in_cents,
         available: row.available,
       });

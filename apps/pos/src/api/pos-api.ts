@@ -2,6 +2,7 @@ import type { AccountingApi } from "../accounting";
 import type { DeliveryApi, DeliveryAssignment, DeliveryDriver, SharedDelivery } from "../delivery";
 import type { ReceiptPrintingApi } from "../ReceiptPrinting";
 import type { ProductionPrintingApi } from "../ProductionPrinting";
+import type { CatalogPricingApi } from "../CatalogPricesEditor";
 import { createUuid } from "@antojit-os/domain";
 import type {
   AccountManagementOptions,
@@ -49,7 +50,7 @@ const errorMessage = (body: unknown): string => {
   return "No fue posible completar la operación";
 };
 
-export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
+export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi, CatalogPricingApi {
   private readonly productionPrintKeys = new Map<string, string>();
 
   constructor(
@@ -127,6 +128,28 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
     },
   ): Promise<SeasonalProductChange> {
     return this.request(`/v1/catalog/products/${productId}`, {
+      method: "PATCH",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  updateProductPrice(
+    productId: string,
+    input: { expectedVersion: number; priceInCents: number },
+  ): Promise<SeasonalProductChange> {
+    return this.request(`/v1/catalog/products/${productId}/price`, {
+      method: "PATCH",
+      idempotencyKey: this.createIdempotencyKey(),
+      body: input,
+    });
+  }
+
+  updateModifierPrice(
+    modifierId: string,
+    input: { expectedPriceDeltaInCents: number; priceDeltaInCents: number },
+  ): Promise<{ modifier: { id: string; name: string; priceDeltaInCents: number } }> {
+    return this.request(`/v1/catalog/modifiers/${modifierId}/price`, {
       method: "PATCH",
       idempotencyKey: this.createIdempotencyKey(),
       body: input,

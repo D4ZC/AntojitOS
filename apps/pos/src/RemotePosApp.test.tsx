@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "./api/pos-api";
 import { RemotePosApp, type RemoteApi } from "./RemotePosApp";
@@ -334,6 +334,12 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   updateSeasonalProduct: vi.fn().mockResolvedValue({
     product: { id: "dish-1", name: "Mole", priceInCents: 11_500, available: true, version: 2 },
   }),
+  updateProductPrice: vi.fn().mockResolvedValue({
+    product: { id: "product-1", name: "Quesadilla", priceInCents: 4500, available: true, version: 2 },
+  }),
+  updateModifierPrice: vi.fn().mockResolvedValue({
+    modifier: { id: "modifier-1", name: "Extra", priceDeltaInCents: 2500 },
+  }),
   ...overrides,
 });
 
@@ -352,6 +358,7 @@ const loginAndSelectTable = async (api: RemoteApi) => {
 afterEach(() => {
   cleanup();
   window.localStorage.clear();
+  vi.restoreAllMocks();
 });
 
 describe("POS conectado", () => {
@@ -385,6 +392,156 @@ describe("POS conectado", () => {
       guestCount: 2,
     });
     expect(screen.getByRole("button", { name: /agregar quesadilla/i })).toBeInTheDocument();
+  });
+
+  it("permite al administrador cambiar un precio fijo antes de abrir mesa y desde la comanda", async () => {
+    storeTerminal();
+    const updatedCatalog = catalog.map((category) => ({
+      ...category,
+      products: category.products.map((product) => ({ ...product, priceInCents: 4500, version: 2 })),
+    }));
+    const api = createApi({ catalog: vi.fn().mockResolvedValueOnce(catalog).mockResolvedValue(updatedCatalog) });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Precios del menú" }));
+
+    expect(api.openAccount).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Precio base de Quesadilla"), { target: { value: "45" } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar precio base de Quesadilla" }));
+    await waitFor(() => expect(api.updateProductPrice).toHaveBeenCalledWith("product-1", {
+      expectedVersion: 1, priceInCents: 4500,
+    }));
+    await waitFor(() => expect(screen.getByRole("button", { name: "Listo" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "Listo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Mesa 1, libre" }));
+    expect(await screen.findByRole("button", { name: "Agregar Quesadilla, $45.00" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Precios del menú" }));
+    expect(screen.getByLabelText("Precio base de Quesadilla")).toHaveValue("45");
+  });
+
+  it("oculta la administración de precios a sesiones sin permiso de catálogo", async () => {
+    storeTerminal();
+    const api = createApi({ login: vi.fn().mockResolvedValue({
+      ...session, user: { ...session.user, permissions: session.user.permissions.filter((permission) => permission !== "catalog.product.manage") },
+    }) });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    await screen.findByRole("heading", { name: "Selecciona una mesa" });
+    expect(screen.queryByRole("button", { name: "Precios del menú" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Mesa 1, libre" }));
+    await screen.findByRole("button", { name: /agregar quesadilla/i });
+    expect(screen.queryByRole("button", { name: "Precios del menú" })).not.toBeInTheDocument();
+    expect(api.updateProductPrice).not.toHaveBeenCalled();
+    expect(api.updateModifierPrice).not.toHaveBeenCalled();
+  });
+
+  it("recarga los precios al abrir una mesa aunque el mesero ya tuviera sesión iniciada", async () => {
+    storeTerminal();
+    const updated = catalog.map((category) => ({ ...category, products: category.products.map((product) => ({ ...product, version: 2, priceInCents: 4500 })) }));
+    const api = createApi({
+      login: vi.fn().mockResolvedValue({ ...session, user: { ...session.user, permissions: ["service.account.open", "service.item.edit"] } }),
+      catalog: vi.fn().mockResolvedValueOnce(catalog).mockResolvedValue(updated),
+    });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    await screen.findByRole("button", { name: "Mesa 1, libre" });
+    expect(api.catalog).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "Mesa 1, libre" }));
+    expect(await screen.findByRole("button", { name: "Agregar Quesadilla, $45.00" })).toBeInTheDocument();
+    expect(api.catalog).toHaveBeenCalledTimes(2);
+    expect(screen.queryByRole("button", { name: "Precios del menú" })).not.toBeInTheDocument();
+  });
+
+  it("actualiza precios por foco, consulta periódica y visibilidad sin cambiar la cuenta ni la nota en edición", async () => {
+    storeTerminal();
+    const visibility = vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const intervals = vi.spyOn(window, "setInterval");
+    const initial = { ...sentAccount, items: sentAccount.items.map((item) => ({ ...item, note: "Sin crema" })) };
+    const api = createApi({ account: vi.fn().mockResolvedValue(initial) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "+ Nota" }));
+    fireEvent.change(screen.getByLabelText("Nota para preparación"), { target: { value: "Sin crema, bien dorada" } });
+    const prices = (priceInCents: number) => catalog.map((category) => ({ ...category, products: category.products.map((product) => ({ ...product, priceInCents })) }));
+    vi.mocked(api.catalog).mockResolvedValue(prices(4500));
+    fireEvent.focus(window);
+    expect(await screen.findByRole("button", { name: "Agregar Quesadilla, $45.00" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Nota para preparación")).toHaveValue("Sin crema, bien dorada");
+    expect(screen.getByText("Nota: Sin crema")).toBeInTheDocument();
+    expect(screen.getByText("v2")).toBeInTheDocument();
+    expect(api.account).toHaveBeenCalledTimes(1);
+    const callback = intervals.mock.calls.filter(([handler, delay]) => typeof handler === "function" && delay === 15_000).at(-1)?.[0];
+    expect(callback).toBeTypeOf("function");
+    vi.mocked(api.catalog).mockResolvedValue(prices(4800));
+    await act(async () => { if (typeof callback === "function") callback(); });
+    expect(screen.getByRole("button", { name: "Agregar Quesadilla, $48.00" })).toBeInTheDocument();
+    const callsBeforeHidden = vi.mocked(api.catalog).mock.calls.length;
+    visibility.mockReturnValue("hidden");
+    fireEvent.focus(window);
+    await act(async () => { if (typeof callback === "function") callback(); });
+    expect(api.catalog).toHaveBeenCalledTimes(callsBeforeHidden);
+    vi.mocked(api.catalog).mockResolvedValue(prices(5000));
+    visibility.mockReturnValue("visible");
+    fireEvent(document, new Event("visibilitychange"));
+    expect(await screen.findByRole("button", { name: "Agregar Quesadilla, $50.00" })).toBeInTheDocument();
+    expect(screen.getByLabelText("Nota para preparación")).toHaveValue("Sin crema, bien dorada");
+    expect(api.updateItem).not.toHaveBeenCalled();
+    expect(api.account).toHaveBeenCalledTimes(1);
+  });
+
+  it("descarta una respuesta de catálogo antigua si otra consulta más reciente ya terminó", async () => {
+    storeTerminal();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const api = createApi();
+    await loginAndSelectTable(api);
+    let resolveOlder: ((value: CatalogCategory[]) => void) | undefined;
+    const older = catalog.map((category) => ({ ...category, products: category.products.map((product) => ({ ...product, priceInCents: 4500 })) }));
+    const newer = catalog.map((category) => ({ ...category, products: category.products.map((product) => ({ ...product, priceInCents: 4800 })) }));
+    vi.mocked(api.catalog).mockImplementationOnce(() => new Promise((resolve) => { resolveOlder = resolve; })).mockResolvedValue(newer);
+    fireEvent.focus(window);
+    fireEvent.focus(window);
+    expect(await screen.findByRole("button", { name: "Agregar Quesadilla, $48.00" })).toBeInTheDocument();
+    await act(async () => resolveOlder?.(older));
+    expect(screen.getByRole("button", { name: "Agregar Quesadilla, $48.00" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agregar Quesadilla, $45.00" })).not.toBeInTheDocument();
+  });
+
+  it("descarta consultas pendientes de una sesión cerrada incluso después de iniciar otra sesión", async () => {
+    storeTerminal();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const api = createApi();
+    await loginAndSelectTable(api);
+    let resolvePreviousSession: ((value: CatalogCategory[]) => void) | undefined;
+    vi.mocked(api.catalog).mockImplementationOnce(() => new Promise((resolve) => { resolvePreviousSession = resolve; }));
+    fireEvent.focus(window);
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar sesión de Administrador" }));
+    await screen.findByRole("heading", { name: "Acceso al punto de venta" });
+    const current = catalog.map((category) => ({ ...category, products: category.products.map((product) => ({ ...product, priceInCents: 5000 })) }));
+    vi.mocked(api.catalog).mockResolvedValue(current);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Mesa 1, libre" }));
+    expect(await screen.findByRole("button", { name: "Agregar Quesadilla, $50.00" })).toBeInTheDocument();
+    await act(async () => resolvePreviousSession?.(catalog));
+    expect(screen.getByRole("button", { name: "Agregar Quesadilla, $50.00" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Agregar Quesadilla, $42.00" })).not.toBeInTheDocument();
+  });
+
+  it("pausa la actualización automática mientras se editan precios", async () => {
+    storeTerminal();
+    vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
+    const api = createApi();
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Precios del menú" }));
+    fireEvent.change(screen.getByLabelText("Precio base de Quesadilla"), { target: { value: "46" } });
+    const previousCalls = vi.mocked(api.catalog).mock.calls.length;
+    fireEvent.focus(window);
+    fireEvent(document, new Event("visibilitychange"));
+    await act(async () => undefined);
+    expect(api.catalog).toHaveBeenCalledTimes(previousCalls);
+    expect(screen.getByLabelText("Precio base de Quesadilla")).toHaveValue("46");
   });
 
   it("permite recuperar un servicio sin mesa que quedó abierto", async () => {
@@ -842,7 +999,7 @@ describe("POS conectado", () => {
       priceInCents: 11_500,
     }));
     expect(await screen.findByText("Mole: $115.00 · disponible hoy")).toBeInTheDocument();
-    expect(api.catalog).toHaveBeenCalledTimes(2);
+    expect(api.catalog).toHaveBeenCalledTimes(3);
   });
 
   it("genera una precuenta táctil sin cerrar la cuenta", async () => {

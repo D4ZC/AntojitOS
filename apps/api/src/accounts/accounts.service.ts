@@ -9,6 +9,7 @@ import {
 import { calculateSaleTotals } from "@antojit-os/domain";
 import { randomUUID } from "node:crypto";
 import { AuditService } from "../audit/audit.service.js";
+import { modifierPriceLabel } from "../catalog/modifier-price-label.js";
 import {
   DATABASE,
   type DatabasePort,
@@ -102,6 +103,7 @@ interface ModifierRow extends DatabaseRow {
   minimum_selections: number;
   maximum_selections: number;
   modifier_id: string;
+  modifier_code: string;
   modifier_name: string;
   price_delta_in_cents: number;
   available: boolean;
@@ -475,12 +477,18 @@ export class AccountsService {
         const product = productResult.rows[0];
         if (!product) throw new NotFoundException("Producto no disponible");
 
-        const selectedModifiers = await this.validateModifiers(
+        const selectedModifiers = (await this.validateModifiers(
           transaction,
           input.productId,
           actor.siteId,
           input.modifierIds ?? [],
-        );
+        )).map((modifier) => ({
+          ...modifier,
+          modifier_name: modifierPriceLabel(
+            modifier.modifier_code, modifier.modifier_name,
+            product.price_in_cents, modifier.price_delta_in_cents,
+          ),
+        }));
         const itemId = randomUUID();
         await transaction.query(
           `INSERT INTO order_items (
@@ -1928,6 +1936,7 @@ export class AccountsService {
          groups.minimum_selections,
          groups.maximum_selections,
          modifiers.id AS modifier_id,
+         modifiers.code AS modifier_code,
          modifiers.name AS modifier_name,
          modifiers.price_delta_in_cents,
          modifiers.available
