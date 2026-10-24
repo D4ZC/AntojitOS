@@ -6,6 +6,7 @@ import {
   accountingDateLabel, accountingPesosToCents, accountingToday,
 } from "./accounting";
 import { formatMoney } from "./format";
+import { ReasonPresets } from "./ReasonPresets";
 import "./accounting.css";
 
 export type { AccountingApi } from "./accounting";
@@ -331,12 +332,14 @@ export const AccountingPanel = ({ api, onClose }: AccountingPanelProps) => {
               <h3>Anular pago de {formatMoney(voidingPayment.amountInCents)}</h3>
               <p>El saldo del cargo volverá a aumentar y el resumen de su fecha original se recalculará.{voidingPayment.source === "business_cash" ? " Se registrará el movimiento que repone el efectivo. Requiere que el turno de caja original siga abierto." : ""}</p>
               <label>Motivo de anulación<textarea required maxLength={240} rows={3} disabled={busy} value={voidReason} onChange={(event) => setVoidReason(event.target.value)} /></label>
+              <ReasonPresets context="paymentVoid" value={voidReason} onChange={setVoidReason} disabled={busy} />
               <div className="accounting-actions"><button type="button" disabled={busy} onClick={() => setVoidingPayment(null)}>Conservar pago</button><button className="accounting-danger" type="submit" disabled={busy || !voidReason.trim()}>Confirmar anulación</button></div>
             </form>}
             {!selectedBill.voidedAt && <section className="accounting-bill-void-section" aria-label="Anulación del cargo">
               {selectedBill.paidInCents > 0 ? <p className="modal-help">Para anular este cargo, anula primero sus pagos vigentes.</p> : voidingBill ? <form className="accounting-void-form accounting-form" onSubmit={voidBill} aria-label="Anular cargo">
                 <h3>Anular cargo</h3><p>Se eliminará del saldo pendiente y conservará el historial.</p>
                 <label>Motivo de anulación del cargo<textarea required maxLength={240} rows={3} disabled={busy} value={voidReason} onChange={(event) => setVoidReason(event.target.value)} /></label>
+                <ReasonPresets context="billVoid" value={voidReason} onChange={setVoidReason} disabled={busy} />
                 <div className="accounting-actions"><button type="button" disabled={busy} onClick={() => setVoidingBill(false)}>Conservar cargo</button><button className="accounting-danger" type="submit" disabled={busy || !voidReason.trim()}>Confirmar anulación del cargo</button></div>
               </form> : <button className="accounting-danger" type="button" disabled={busy} onClick={() => { setVoidingBill(true); setVoidingPayment(null); setVoidReason(""); }}>Anular cargo</button>}
             </section>}

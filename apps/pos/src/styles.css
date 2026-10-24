@@ -1285,7 +1285,8 @@ h2 {
 }
 
 .builder-products,
-.quick-notes {
+.quick-notes,
+.reason-presets {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
@@ -1293,7 +1294,8 @@ h2 {
 }
 
 .builder-products button,
-.quick-notes button {
+.quick-notes button,
+.reason-presets button {
   display: grid;
   min-height: 52px;
   align-content: center;
@@ -1310,14 +1312,40 @@ h2 {
 }
 
 .builder-products button.selected,
-.quick-notes button.selected {
+.quick-notes button.selected,
+.reason-presets button.selected {
   border-color: var(--forest);
   color: white;
   background: var(--forest-2);
 }
 
-.quick-notes {
+.quick-notes,
+.reason-presets {
   margin-bottom: 12px;
+}
+
+.quick-note-groups {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.quick-note-group > small {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.quick-note-group .quick-notes {
+  margin-bottom: 0;
+}
+
+.reason-presets button:focus-visible,
+.quick-notes button:focus-visible {
+  outline: 3px solid var(--forest);
+  outline-offset: 3px;
 }
 
 .builder-note,

@@ -178,6 +178,7 @@ export const pilotCatalog = {
         option(920, "FLAUTA-REQUESON", "Requesón"),
         option(921, "FLAUTA-RAJAS", "Rajas"),
         option(922, "FLAUTA-PICADILLO", "Picadillo"),
+        option(1184, "FLAUTA-CHICHARRON", "Chicharrón"),
       ],
     },
     {

@@ -79,6 +79,9 @@ describe("ReceiptPrintControls", () => {
     fireEvent.click(screen.getByRole("button", { name: "Reimprimir ticket" }));
     expect(screen.getByRole("button", { name: "Confirmar reimpresión" })).toBeDisabled();
     expect(api.reprintReceipt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Copia para el cliente" }));
+    expect(screen.getByLabelText("Motivo de reimpresión")).toHaveValue("Copia para el cliente");
+    expect(api.reprintReceipt).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Motivo de reimpresión"), { target: { value: "  Copia solicitada por el cliente  " } });
     fireEvent.click(screen.getByRole("button", { name: "Confirmar reimpresión" }));
     await waitFor(() => expect(api.reprintReceipt).toHaveBeenCalledWith(receipt.id, "Copia solicitada por el cliente"));

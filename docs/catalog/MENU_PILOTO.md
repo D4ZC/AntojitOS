@@ -24,7 +24,7 @@ Todos los pozoles piden la **carne** (una o varias): pierna, lengua, pata, oreja
 |---|---|---|---:|
 | Tacos dorados | Taco dorado enrollado | Papa, frijol, rajas, requesón o picadillo | $10 |
 | Tacos dorados | Taco dorado de carne, combinado o chicharrón | Carne, combinado o chicharrón | $15 |
-| Flautas | Flauta | Carne, papa, frijol, requesón, rajas o picadillo | $35 |
+| Flautas | Flauta | Carne, papa, frijol, requesón, rajas, picadillo o chicharrón | $35 |
 | Enchiladas | Orden de 4 enchiladas | Queso, queso con cebolla o carne | $70 |
 | Enchiladas | Enchilada por pieza | Queso, queso con cebolla o carne | $20 |
 | Tostadas | Tostada | Pierna, pata, carne de cabeza, lengua, cuerito, trompa u oreja en vinagre | $35 |
@@ -91,7 +91,9 @@ El administrador puede cambiar nombre y precio, marcar "Hoy sí / Hoy no" y agre
 ## Captura en el POS
 
 - Al tocar un producto con opciones se abre el armador de la categoría: se pueden combinar variantes (por ejemplo, 2 tostadas de pierna y 1 sencilla), cada una con su propia cantidad, opciones y observaciones. Cada variante llega a cocina como un artículo independiente.
-- Observaciones rápidas: **Sin lácteos**, **Sin salsa** y **Sin cebolla**, además de la nota libre. También aparecen en el botón **+ Nota** de cada artículo.
+- Las observaciones rápidas dependen del producto y también aparecen en **+ Nota** de cada artículo, incluso después de enviarlo a cocina. En tortas incluyen cebolla, col, salsa, frijoles, **Sin migajón** y **Preparada en bolsa**. En pozole, tostadas, quesadillas, flautas y otros antojitos incluyen col, lechuga, picante, crema, queso y combinaciones como **Con col y lechuga**, **Sin crema ni queso** y **Solo salsa**.
+- Los botones se pueden combinar; al elegir una indicación se reemplazan las opciones opuestas. Se conserva la nota libre opcional, con un máximo total de 200 caracteres. Estas indicaciones no cambian el precio; los rellenos y extras se eligen en sus propias opciones.
+- Al cancelar artículos, pedidos o liberar mesas se puede elegir un motivo rápido como **Error**, **Sin razón** o **Cliente canceló**, y modificarlo antes de confirmar. También hay motivos rápidos en otras acciones que piden una razón, como devoluciones o anulaciones.
 
 ## Reglas de carga
 

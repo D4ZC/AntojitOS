@@ -120,14 +120,15 @@ describe("pantalla KDS", () => {
 
     const submit = screen.getByRole("button", { name: "Solicitar reimpresión" });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Motivo de la reimpresión"), {
-      target: { value: "Papel atascado" },
-    });
+    expect(screen.getByRole("button", { name: "Error" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Falta de papel" }));
+    expect(screen.getByLabelText("Motivo de la reimpresión")).toHaveValue("Falta de papel");
+    expect(api.reprintProductionTicket).not.toHaveBeenCalled();
     fireEvent.click(submit);
 
     await waitFor(() => expect(api.reprintProductionTicket).toHaveBeenCalledWith(
       "ticket-1",
-      "Papel atascado",
+      "Falta de papel",
     ));
   });
 });

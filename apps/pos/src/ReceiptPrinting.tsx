@@ -2,6 +2,7 @@ import { type FormEvent, useEffect, useState } from "react";
 import { createPortal, flushSync } from "react-dom";
 import type { ReceiptPrintingStatus, ReceiptPrintResult, ReceiptPrintStatus, SalesReceipt } from "./api/types";
 import { formatMoney } from "./format";
+import { ReasonPresets } from "./ReasonPresets";
 import "./receipt-printing.css";
 
 export interface ReceiptPrintingApi {
@@ -166,7 +167,8 @@ export const ReceiptPrintControls = ({ api, receipt, canPrint, canReprint, canPr
       </div>
       {canPrint && canPrintBrowser && <p className="receipt-browser-help">Para imprimir por USB, selecciona la Bixolon instalada en este equipo y papel de 80 mm. Desactiva los encabezados y pies de página del navegador.</p>}
       {reprintOpen && <form className="receipt-reprint-form" onSubmit={submitReprint}>
-        <label>Motivo de reimpresión<input autoFocus value={reason} maxLength={200} minLength={3} required disabled={busy} onChange={(event) => setReason(event.target.value)} /></label>
+        <label>Motivo de reimpresión<input value={reason} maxLength={200} minLength={3} required disabled={busy} onChange={(event) => setReason(event.target.value)} /></label>
+        <ReasonPresets context="reprint" value={reason} onChange={setReason} disabled={busy} autoFocus />
         <div className="receipt-print-actions"><button type="button" disabled={busy} onClick={() => { setReprintOpen(false); setReason(""); }}>Volver</button><button type="submit" disabled={busy || reason.trim().length < 3}>Confirmar reimpresión</button></div>
       </form>}
       {browserReceipt && createPortal(<div className="receipt-browser-print" style={{ display: "none" }} aria-hidden="true"><ReceiptPaper receipt={browserReceipt} browserCopy /></div>, document.body)}

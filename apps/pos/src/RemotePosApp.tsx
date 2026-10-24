@@ -26,8 +26,10 @@ import type {
   TerminalCredentials,
 } from "./api/types";
 import { formatMoney } from "./format";
-import { hasQuickNote, QUICK_NOTES, toggleQuickNote } from "./notes";
+import { ReasonPresets } from "./ReasonPresets";
+import { MAX_NOTE_LENGTH, toggleQuickNote } from "./notes";
 import { OrderBuilder, type OrderBuilderLine } from "./OrderBuilder";
+import { QuickNotes } from "./QuickNotes";
 import { ReceiptPaper, ReceiptPrintControls, type ReceiptPrintingApi } from "./ReceiptPrinting";
 import { ProductionPrintControls, type ProductionPrintingApi } from "./ProductionPrinting";
 import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
@@ -1424,6 +1426,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                       </div>
                       <label>Importe<input aria-label="Importe del movimiento" type="number" inputMode="decimal" min="0.01" step="0.01" value={cashMovementAmount} onChange={(event) => setCashMovementAmount(event.target.value)} /></label>
                       <label>Motivo<input aria-label="Motivo del movimiento" maxLength={200} value={cashMovementReason} onChange={(event) => setCashMovementReason(event.target.value)} /></label>
+                      <ReasonPresets context={cashMovementDirection === "in" ? "cashIn" : "cashOut"} value={cashMovementReason} onChange={setCashMovementReason} disabled={busy} />
                       <button type="button" disabled={busy || !cashMovementAmount || !cashMovementReason.trim()} onClick={() => void recordCashMovement()}>Registrar movimiento</button>
                     </div>
                   </section>
@@ -1475,7 +1478,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="receipt-action-title">
               <div className="modal-heading"><div><span className="eyebrow">Ticket {receiptAction.receipt.folio}</span><h2 id="receipt-action-title">{receiptAction.kind === "reprint" ? "Reimprimir ticket" : receiptAction.kind === "cancellation" ? "Cancelar ticket" : "Devolver ticket"}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setReceiptAction(null)}>×</button></div>
               <p className="modal-help">{receiptAction.kind === "reprint" ? "La copia quedará identificada como reimpresión." : "La venta original se conservará y se generará un movimiento compensatorio."}</p>
-              <label>Motivo<textarea aria-label="Motivo de la acción sobre el ticket" value={receiptActionReason} maxLength={200} rows={3} autoFocus onChange={(event) => setReceiptActionReason(event.target.value)} /></label>
+              <label>Motivo<textarea aria-label="Motivo de la acción sobre el ticket" value={receiptActionReason} maxLength={200} rows={3} onChange={(event) => setReceiptActionReason(event.target.value)} /></label>
+              <ReasonPresets context={receiptAction.kind === "cancellation" ? "receiptCancellation" : receiptAction.kind} value={receiptActionReason} onChange={setReceiptActionReason} disabled={busy} autoFocus />
               <div className="modal-actions"><button type="button" onClick={() => setReceiptAction(null)}>Volver</button><button className={receiptAction.kind === "reprint" ? "access-primary" : "danger-button"} type="button" disabled={busy || !receiptActionReason.trim()} onClick={() => void performReceiptAction()}>{busy ? "Procesando…" : "Confirmar"}</button></div>
             </section>
           </div>
@@ -1485,6 +1489,10 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   }
 
   const activeCategory = catalog.find((category) => category.id === activeCategoryId) ?? catalog[0];
+  const editingCategory = editingItem
+    ? catalog.find((category) => category.products.some((product) => product.id === editingItem.productId))
+    : undefined;
+  const editingProduct = editingCategory?.products.find((product) => product.id === editingItem?.productId);
   const canManageAccount = session.user.permissions.includes("service.account.manage");
   const canDiscount = session.user.permissions.includes("service.account.discount");
   const canCreatePrecheck = session.user.permissions.includes("service.precheck.create");
@@ -1779,6 +1787,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             </section>
 
             <label className="management-reason">Motivo de la operación<textarea value={managementReason} maxLength={200} rows={2} onChange={(event) => setManagementReason(event.target.value)} /></label>
+            <ReasonPresets context="management" value={managementReason} onChange={setManagementReason} disabled={busy} />
 
             <section className="management-section danger-zone">
               <h3>Cancelar cuenta</h3>
@@ -1830,7 +1839,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="quick-cancel-title">{account.tableId ? "Liberar" : "Cancelar"} {serviceLabel(account)}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setQuickCancellationOpen(false)}>×</button></div>
             <p className="modal-help">{account.tableId ? "La cuenta se marcará como cancelada y la mesa volverá a estar disponible." : "Se cancelará el pedido y se descartarán los productos que aún no se han enviado a cocina."}</p>
             {!canCancelAccount && <p className="form-error" role="alert">Primero cancela o transfiere todos los artículos y anula los descuentos vigentes.</p>}
-            <label>{account.tableId ? "Motivo para liberar la mesa" : "Motivo de cancelación"}<textarea value={quickCancellationReason} maxLength={200} rows={3} autoFocus onChange={(event) => setQuickCancellationReason(event.target.value)} /></label>
+            <label>{account.tableId ? "Motivo para liberar la mesa" : "Motivo de cancelación"}<textarea value={quickCancellationReason} maxLength={200} rows={3} onChange={(event) => setQuickCancellationReason(event.target.value)} /></label>
+            <ReasonPresets context={account.tableId ? "table" : "account"} value={quickCancellationReason} onChange={setQuickCancellationReason} disabled={busy} autoFocus />
             <div className="modal-actions"><button type="button" onClick={() => setQuickCancellationOpen(false)}>Conservar cuenta</button><button className="danger-action" type="button" disabled={!canCancelAccount || !quickCancellationReason.trim() || busy} onClick={() => void cancelCurrentAccount(quickCancellationReason)}>{account.tableId ? "Confirmar y liberar" : "Confirmar cancelación"}</button></div>
           </section>
         </div>
@@ -1859,14 +1869,14 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
       {editingItem && (
         <div className="modal-backdrop" role="presentation">
           <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="note-title">
-            <div className="modal-heading"><div><span className="eyebrow">Instrucción especial</span><h2 id="note-title">{editingItem.productName}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setEditingItem(null)}>×</button></div>
-            <div className="quick-notes" role="group" aria-label="Observaciones frecuentes">
-              {QUICK_NOTES.map((quickNote) => (
-                <button className={hasQuickNote(noteDraft, quickNote) ? "selected" : ""} type="button" key={quickNote} aria-pressed={hasQuickNote(noteDraft, quickNote)} onClick={() => setNoteDraft((draft) => toggleQuickNote(draft, quickNote))}>{quickNote}</button>
-              ))}
-            </div>
+            <div className="modal-heading"><div><span className="eyebrow">Instrucción especial</span><h2 id="note-title">{editingItem.productName}</h2></div><button type="button" aria-label="Cerrar" autoFocus onClick={() => setEditingItem(null)}>×</button></div>
+            <QuickNotes
+              context={{ name: editingItem.productName, code: editingProduct?.code, categoryName: editingCategory?.name, categoryCode: editingCategory?.code }}
+              note={noteDraft}
+              onToggle={(quickNote) => setNoteDraft((draft) => toggleQuickNote(draft, quickNote))}
+            />
             {editingItem.preparationState !== "pending" && <p className="modal-help">Cocina recibirá la actualización de esta nota.</p>}
-            <label>Nota para preparación<textarea value={noteDraft} maxLength={200} rows={4} autoFocus onChange={(event) => setNoteDraft(event.target.value)} /></label>
+            <label>Nota para preparación<textarea value={noteDraft} maxLength={MAX_NOTE_LENGTH} rows={4} onChange={(event) => setNoteDraft(event.target.value)} /></label>
             <div className="modal-actions"><button type="button" onClick={() => setEditingItem(null)}>Cancelar</button><button className="access-primary" type="button" disabled={busy} onClick={() => void changeQuantity(editingItem, editingItem.quantity, noteDraft.trim())}>Guardar nota</button></div>
           </section>
         </div>
@@ -1877,7 +1887,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
           <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="cancel-title">
             <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="cancel-title">Cancelar {cancellingItem.productName}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setCancellingItem(null)}>×</button></div>
             <p className="modal-help">Si el producto ya fue enviado, cocina recibirá una comanda de cancelación.</p>
-            <label>Motivo de cancelación<textarea value={cancellationReason} maxLength={200} rows={3} autoFocus onChange={(event) => setCancellationReason(event.target.value)} /></label>
+            <label>Motivo de cancelación<textarea value={cancellationReason} maxLength={200} rows={3} onChange={(event) => setCancellationReason(event.target.value)} /></label>
+            <ReasonPresets context="item" value={cancellationReason} onChange={setCancellationReason} disabled={busy} autoFocus />
             <div className="modal-actions"><button type="button" onClick={() => setCancellingItem(null)}>Volver</button><button className="danger-action" type="button" disabled={!cancellationReason.trim() || busy} onClick={() => void cancelItem()}>Confirmar cancelación</button></div>
           </section>
         </div>

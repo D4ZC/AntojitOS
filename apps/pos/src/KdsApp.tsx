@@ -1,5 +1,6 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { ApiError, PosApi } from "./api/pos-api";
+import { ReasonPresets } from "./ReasonPresets";
 import type {
   ProductionTicket,
   Session,
@@ -285,7 +286,8 @@ export const KdsApp = ({ api: injectedApi, storage = window.localStorage }: KdsA
         <div className="modal-backdrop" role="presentation">
           <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="reprint-title">
             <div className="modal-heading"><div><span className="eyebrow">Acción auditada</span><h2 id="reprint-title">Reimprimir {reprintTicket.service.label}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setReprintTicket(null)}>×</button></div>
-            <label>Motivo de la reimpresión<textarea value={reprintReason} maxLength={200} rows={3} autoFocus onChange={(event) => setReprintReason(event.target.value)} /></label>
+            <label>Motivo de la reimpresión<textarea value={reprintReason} maxLength={200} rows={3} onChange={(event) => setReprintReason(event.target.value)} /></label>
+            <ReasonPresets context="reprint" value={reprintReason} onChange={setReprintReason} disabled={busyTicketId !== null} autoFocus />
             <div className="modal-actions"><button type="button" onClick={() => setReprintTicket(null)}>Cancelar</button><button className="access-primary" type="button" disabled={!reprintReason.trim() || busyTicketId !== null} onClick={() => void requestReprint()}>Solicitar reimpresión</button></div>
           </section>
         </div>

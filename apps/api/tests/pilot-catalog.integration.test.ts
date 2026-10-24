@@ -148,6 +148,14 @@ describe("catálogo real del piloto", () => {
     ]);
 
     expect(byCode("FLAUTA")?.priceInCents).toBe(3500);
+    expect(byCode("FLAUTA")?.modifierGroups[0]).toMatchObject({
+      name: "Relleno",
+      minimumSelections: 1,
+      maximumSelections: 1,
+    });
+    expect(byCode("FLAUTA")?.modifierGroups[0]?.options).toEqual([
+      "Carne", "Papa", "Frijol", "Requesón", "Rajas", "Picadillo", "Chicharrón",
+    ].map((name) => expect.objectContaining({ name, priceDeltaInCents: 0, available: true })));
     expect(byCode("TOSTADA")?.priceInCents).toBe(3500);
     expect(byCode("TOSTADA-SENCILLA")?.priceInCents).toBe(2000);
     expect(byCode("TOSTADA")?.modifierGroups[0]?.options.map((option) => option.name)).toEqual([

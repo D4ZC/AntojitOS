@@ -439,6 +439,35 @@ describe("POS conectado", () => {
     expect(api.sendRound).not.toHaveBeenCalled();
   });
 
+  it("combina la preparación de una comanda enviada y reemplaza indicaciones opuestas", async () => {
+    storeTerminal();
+    const note = "Bien dorada, Sin picante, Sin lechuga, Con salsa y queso";
+    const initial = { ...sentAccount, items: sentAccount.items.map((item) => ({ ...item, note: "Bien dorada" })) };
+    const updated = { ...sentAccount, version: 3, items: sentAccount.items.map((item) => ({ ...item, note })) };
+    const api = createApi({ account: vi.fn().mockResolvedValueOnce(initial).mockResolvedValue(updated) });
+    await loginAndSelectTable(api);
+
+    fireEvent.click(screen.getByRole("button", { name: "+ Nota" }));
+    const input = screen.getByLabelText("Nota para preparación");
+    expect(input).not.toHaveFocus();
+    expect(screen.getByRole("button", { name: "Cerrar" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Con picante" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sin picante" }));
+    fireEvent.click(screen.getByRole("button", { name: "Con col y lechuga" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sin lechuga" }));
+    fireEvent.click(screen.getByRole("button", { name: "Con salsa y queso" }));
+    expect(screen.getByRole("button", { name: "Con picante" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Con col y lechuga" })).toHaveAttribute("aria-pressed", "false");
+    expect(input).toHaveValue(note);
+    fireEvent.click(screen.getByRole("button", { name: "Guardar nota" }));
+
+    await waitFor(() => expect(api.updateItem).toHaveBeenCalledWith("account-1", "item-1", {
+      quantity: 1, expectedVersion: 2, note,
+    }));
+    expect(await screen.findByText(`Nota: ${note}`)).toBeInTheDocument();
+    expect(api.sendRound).not.toHaveBeenCalled();
+  });
+
   it("descarta automáticamente una venta rápida vacía al salir", async () => {
     storeTerminal();
     const quick = { ...emptyAccount, tableId: null, tableName: null, serviceType: "quick" as const };
@@ -474,9 +503,13 @@ describe("POS conectado", () => {
     await loginAndSelectTable(api);
     expect(screen.queryByRole("button", { name: "Gestionar cuenta" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancelar pedido" }));
-    fireEvent.change(screen.getByLabelText("Motivo de cancelación"), { target: { value: "Captura por error" } });
+    expect(screen.getByRole("button", { name: "Confirmar cancelación" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Error" })).toHaveFocus();
+    fireEvent.click(screen.getByRole("button", { name: "Sin razón" }));
+    expect(screen.getByLabelText("Motivo de cancelación")).toHaveValue("Sin razón");
+    expect(api.cancelAccount).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "Confirmar cancelación" }));
-    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalled());
+    await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", { expectedVersion: 1, reason: "Sin razón" }));
     expect(await screen.findByRole("heading", { name: "Selecciona una mesa" })).toBeInTheDocument();
   });
 
@@ -519,6 +552,23 @@ describe("POS conectado", () => {
 
     await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
       expectedVersion: 0, reason: "Abierto por error",
+    }));
+  });
+
+  it("permite cancelar un artículo con un motivo rápido sin ejecutar la acción hasta confirmar", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(pendingAccount) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Cancelar" }));
+    const confirm = screen.getByRole("button", { name: "Confirmar cancelación" });
+    expect(confirm).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Cambio de pedido" }));
+    expect(screen.getByLabelText("Motivo de cancelación")).toHaveValue("Cambio de pedido");
+    expect(screen.getByRole("button", { name: "Cambio de pedido" })).toHaveAttribute("aria-pressed", "true");
+    expect(api.cancelItem).not.toHaveBeenCalled();
+    fireEvent.click(confirm);
+    await waitFor(() => expect(api.cancelItem).toHaveBeenCalledWith("account-1", pendingAccount.items[0]!.id, {
+      expectedVersion: 1, reason: "Cambio de pedido",
     }));
   });
 
@@ -843,6 +893,9 @@ describe("POS conectado", () => {
     await screen.findByRole("heading", { name: "Gestionar cuenta" });
     const cancel = screen.getByRole("button", { name: "Cancelar cuenta y liberar mesa" });
     expect(cancel).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "Error" }));
+    expect(screen.getByLabelText("Motivo de la operación")).toHaveValue("Error");
+    expect(api.cancelAccount).not.toHaveBeenCalled();
     fireEvent.change(screen.getByLabelText("Motivo de la operación"), {
       target: { value: "Mesa abierta por error" },
     });
@@ -865,9 +918,9 @@ describe("POS conectado", () => {
     expect(await screen.findByRole("heading", { name: "Liberar Mesa 1" })).toBeInTheDocument();
     const confirm = screen.getByRole("button", { name: "Confirmar y liberar" });
     expect(confirm).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Motivo para liberar la mesa"), {
-      target: { value: "Mesa abierta por error" },
-    });
+    fireEvent.click(screen.getByRole("button", { name: "Mesa abierta por error" }));
+    expect(screen.getByLabelText("Motivo para liberar la mesa")).toHaveValue("Mesa abierta por error");
+    expect(api.cancelAccount).not.toHaveBeenCalled();
     fireEvent.click(confirm);
 
     await waitFor(() => expect(api.cancelAccount).toHaveBeenCalledWith("account-1", {
@@ -967,5 +1020,25 @@ describe("POS conectado", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
     await waitFor(() => expect(api.closeCashShift).toHaveBeenCalled());
     expect(await screen.findByRole("heading", { name: "Turno cerrado" })).toBeInTheDocument();
+  });
+
+  it.each([
+    { action: "Cancelar", title: "Cancelar ticket", kind: "cancellation", preset: "Ticket duplicado" },
+    { action: "Devolver", title: "Devolver ticket", kind: "refund", preset: "Producto incorrecto" },
+  ])("confirma $title con un motivo rápido", async ({ action, title, kind, preset }) => {
+    storeTerminal();
+    const api = createApi();
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Caja y corte" }));
+    fireEvent.click(await screen.findByRole("button", { name: action }));
+    expect(screen.getByRole("heading", { name: title })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: preset }));
+    expect(screen.getByLabelText("Motivo de la acción sobre el ticket")).toHaveValue(preset);
+    expect(api.refundReceipt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
+    await waitFor(() => expect(api.refundReceipt).toHaveBeenCalledWith("receipt-1", { kind, reason: preset }));
   });
 });

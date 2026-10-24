@@ -57,6 +57,21 @@ describe("prototipo POS", () => {
     expect(screen.getByRole("button", { name: /agregar una unidad de taco al pastor/i })).toBeDisabled();
   });
 
+  it("combina instrucciones para quesadillas y reemplaza las opuestas al editar", () => {
+    render(<App />);
+    fireEvent.click(screen.getByRole("button", { name: /agregar quesadilla/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Editar nota de Quesadilla" }));
+    fireEvent.click(screen.getByRole("button", { name: "Con col y lechuga" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sin col" }));
+    fireEvent.click(screen.getByRole("button", { name: "Sin crema ni queso" }));
+    fireEvent.click(screen.getByRole("button", { name: "Guardar nota" }));
+
+    expect(screen.getByText("Sin col, Sin crema ni queso")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Editar nota de Quesadilla" }));
+    expect(screen.getByRole("button", { name: "Sin col" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: "Con col y lechuga" })).toHaveAttribute("aria-pressed", "false");
+  });
+
   it("guarda el cliente opcional al recargar y permite dejarlo vacío", () => {
     const view = render(<App />);
     fireEvent.click(screen.getByRole("button", { name: "Cliente y programación" }));

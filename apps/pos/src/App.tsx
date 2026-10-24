@@ -10,7 +10,8 @@ import {
 } from "@antojit-os/domain";
 import { categories, favoriteProductIds, products } from "./catalog";
 import { formatMoney } from "./format";
-import { hasQuickNote, QUICK_NOTES, toggleQuickNote } from "./notes";
+import { MAX_NOTE_LENGTH, toggleQuickNote } from "./notes";
+import { QuickNotes } from "./QuickNotes";
 
 type CategoryId = (typeof categories)[number]["id"];
 const DEMO_ORDER_KEY = "antojit-os-demo-order";
@@ -340,8 +341,8 @@ export const App = () => {
         <section className="touch-modal note-modal" role="dialog" aria-modal="true" aria-labelledby="demo-note-title">
           <div className="modal-heading"><h2 id="demo-note-title">Nota · {editingItem.name}</h2><button type="button" aria-label="Cerrar" onClick={() => setEditingItem(null)}>×</button></div>
           {editingItem.preparationState === "sent" && <p className="modal-help">La nota se actualizará en la comanda enviada.</p>}
-          <div className="quick-notes">{QUICK_NOTES.map((note) => <button type="button" key={note} className={hasQuickNote(noteDraft, note) ? "selected" : ""} aria-pressed={hasQuickNote(noteDraft, note)} onClick={() => setNoteDraft((current) => toggleQuickNote(current, note))}>{note}</button>)}</div>
-          <label>Comentarios para cocina<textarea value={noteDraft} maxLength={120} onChange={(event) => setNoteDraft(event.target.value)} /></label>
+          <QuickNotes context={{ name: editingItem.name, categoryName: products.find((product) => product.id === editingItem.productId)?.category }} note={noteDraft} onToggle={(note) => setNoteDraft((current) => toggleQuickNote(current, note))} />
+          <label>Comentarios para cocina<textarea value={noteDraft} maxLength={MAX_NOTE_LENGTH} onChange={(event) => setNoteDraft(event.target.value)} /></label>
           <div className="modal-actions"><button type="button" onClick={() => setEditingItem(null)}>Cancelar</button><button className="access-primary" type="button" onClick={() => { dispatch({ type: "item-note-updated", itemId: editingItem.id, note: noteDraft }); setEditingItem(null); setNotice("Comentarios de la comanda actualizados"); }}>Guardar nota</button></div>
         </section>
       </div>}

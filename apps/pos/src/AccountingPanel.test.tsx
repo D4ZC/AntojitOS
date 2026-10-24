@@ -168,6 +168,9 @@ describe("contabilidad administrativa", () => {
     expect(modal.getByText("Para anular este cargo, anula primero sus pagos vigentes.")).toBeInTheDocument();
     fireEvent.click(modal.getByRole("button", { name: /Anular pago de/ }));
     expect(modal.getByRole("button", { name: "Confirmar anulación" })).toBeDisabled();
+    fireEvent.click(modal.getByRole("button", { name: "Pago duplicado" }));
+    expect(modal.getByLabelText("Motivo de anulación")).toHaveValue("Pago duplicado");
+    expect(api.voidAccountingPayment).not.toHaveBeenCalled();
     fireEvent.change(modal.getByLabelText("Motivo de anulación"), { target: { value: " Capturado dos veces " } });
     fireEvent.click(modal.getByRole("button", { name: "Confirmar anulación" }));
     await waitFor(() => expect(api.voidAccountingPayment).toHaveBeenCalledWith(bill.id, payment.id, { expectedVersion: 1, reason: "Capturado dos veces" }));
@@ -183,7 +186,9 @@ describe("contabilidad administrativa", () => {
     const modal = await openPayments(api);
     fireEvent.click(modal.getByRole("button", { name: "Anular cargo" }));
     expect(modal.getByRole("button", { name: "Confirmar anulación del cargo" })).toBeDisabled();
-    fireEvent.change(modal.getByLabelText("Motivo de anulación del cargo"), { target: { value: " Cargo duplicado " } });
+    fireEvent.click(modal.getByRole("button", { name: "Cargo duplicado" }));
+    expect(modal.getByLabelText("Motivo de anulación del cargo")).toHaveValue("Cargo duplicado");
+    expect(api.voidAccountingBill).not.toHaveBeenCalled();
     fireEvent.click(modal.getByRole("button", { name: "Confirmar anulación del cargo" }));
     await waitFor(() => expect(api.voidAccountingBill).toHaveBeenCalledWith(bill.id, { expectedVersion: 0, reason: "Cargo duplicado" }));
     expect(await modal.findByText("Cargo anulado. Motivo: Cargo duplicado")).toBeInTheDocument();

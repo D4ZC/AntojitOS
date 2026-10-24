@@ -1,7 +1,8 @@
 import { useState } from "react";
 import type { CatalogCategory, CatalogProduct } from "./api/types";
 import { formatMoney } from "./format";
-import { composeNote, QUICK_NOTES } from "./notes";
+import { composeNote, MAX_NOTE_LENGTH, toggleQuickNoteDraft } from "./notes";
+import { QuickNotes } from "./QuickNotes";
 
 export interface OrderBuilderLine {
   key: string;
@@ -67,7 +68,8 @@ export const OrderBuilder = ({
 
   const siblings = category.products.filter((candidate) => candidate.available);
   const note = composeNote(quickNotes, freeNote);
-  const currentIsValid = product.modifierGroups.every((group) => {
+  const freeNoteLimit = Math.max(0, MAX_NOTE_LENGTH - composeNote(quickNotes, "").length - (quickNotes.length > 0 ? 2 : 0));
+  const currentIsValid = note.length <= MAX_NOTE_LENGTH && product.modifierGroups.every((group) => {
     const groupIds = new Set(group.options.map((option) => option.id));
     const count = modifierIds.filter((id) => groupIds.has(id)).length;
     return count >= group.minimumSelections && count <= group.maximumSelections;
@@ -107,12 +109,11 @@ export const OrderBuilder = ({
   };
 
   const toggleQuickNote = (quickNote: string) => {
+    const next = toggleQuickNoteDraft(quickNotes, freeNote, quickNote);
+    if (composeNote(next.quickNotes, next.freeText).length > MAX_NOTE_LENGTH) return;
     setTouched(true);
-    setQuickNotes((current) =>
-      current.includes(quickNote)
-        ? current.filter((value) => value !== quickNote)
-        : [...current, quickNote],
-    );
+    setQuickNotes(next.quickNotes);
+    setFreeNote(next.freeText);
   };
 
   const stageCurrent = () => {
@@ -194,12 +195,8 @@ export const OrderBuilder = ({
 
         <fieldset className="modifier-group">
           <legend>Observaciones <small>Opcional</small></legend>
-          <div className="quick-notes">
-            {QUICK_NOTES.map((quickNote) => (
-              <button className={quickNotes.includes(quickNote) ? "selected" : ""} type="button" key={quickNote} aria-pressed={quickNotes.includes(quickNote)} onClick={() => toggleQuickNote(quickNote)}>{quickNote}</button>
-            ))}
-          </div>
-          <label className="builder-note">Nota<input value={freeNote} maxLength={120} placeholder="Otra indicación para cocina" onChange={(event) => { setTouched(true); setFreeNote(event.target.value); }} /></label>
+          <QuickNotes context={{ name: product.name, code: product.code, categoryName: category.name, categoryCode: category.code }} note={note} onToggle={toggleQuickNote} />
+          <label className="builder-note">Nota<input value={freeNote} maxLength={freeNoteLimit} placeholder="Otra indicación para cocina" onChange={(event) => { setTouched(true); setFreeNote(event.target.value); }} /></label>
         </fieldset>
 
         <div className="builder-current">
