@@ -20,8 +20,13 @@ La migración conserva las cuentas existentes y agrega responsables, grupos de d
 |---|---:|---|
 | `ADMIN` | `1234` | Descuentos, cortesías y todas las operaciones de cuenta. |
 | `MESERO` | `2345` | Servicio, precuenta y gestión de cuentas sin permiso para descuentos. |
+| `CAJERO` | `3456` | Pedidos y cobros; declara el corte sin consultar ventas registradas, dinero esperado ni diferencias. |
 
-Los PIN pueden cambiarse con `SEED_ADMIN_PIN` y `SEED_WAITER_PIN` antes de ejecutar el seed.
+Los PIN pueden cambiarse con `SEED_ADMIN_PIN`, `SEED_WAITER_PIN` y `SEED_CASHIER_PIN` antes de ejecutar el seed. Los valores de la tabla sólo son predeterminados de desarrollo. `pilot:init` genera un PIN distinto para cada usuario.
+
+La migración agrega `CAJERO` también a sucursales existentes y conserva su PIN en actualizaciones posteriores. En producción utiliza `SEED_CASHIER_PIN`; si aún no está configurado, genera un PIN aleatorio y lo muestra una sola vez en la salida de migración como `Código CAJERO (sucursal)`. El seed explícito restablece el PIN según la configuración. El administrador consulta y concilia los cortes cerrados mediante `GET /api/v1/cash/shifts/closes`; el cajero recibe e imprime únicamente su declaración, sin los importes reales registrados ni las diferencias.
+
+Los comandos del piloto y el actualizador Windows agregan `SEED_CASHIER_PIN` a configuraciones antiguas antes de iniciar las migraciones. El administrador puede consultar ese valor de forma privada en `.env.pilot`. Este paso conserva los otros secretos y no cambia el PIN que ya exista en la base. Para instalaciones con despliegue propio, configura esa variable antes de ejecutar `db:migrate`.
 
 ## Recorrido manual
 

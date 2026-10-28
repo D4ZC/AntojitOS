@@ -21,6 +21,7 @@ const actor = (): AuthContext => ({
   permissions: [
     "cash.shift.read",
     "cash.shift.open",
+    "cash.shift.preview",
     "sales.payment.capture",
     "sales.receipt.read",
   ],

@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from "@nestjs/swagger";
-import { IsDateString, IsInt, IsOptional, IsString, MaxLength, Min } from "class-validator";
+import { IsDateString, IsInt, IsOptional, IsString, IsUUID, MaxLength, Min } from "class-validator";
 
 export class UpdateAccountDetailsDto {
   @ApiProperty({ minimum: 0 })
@@ -12,6 +12,11 @@ export class UpdateAccountDetailsDto {
   @IsString()
   @MaxLength(80)
   customerName?: string | null;
+
+  @ApiPropertyOptional({ format: "uuid", nullable: true })
+  @IsOptional()
+  @IsUUID()
+  customerId?: string | null;
 
   @ApiPropertyOptional({ format: "date-time", nullable: true })
   @IsOptional()

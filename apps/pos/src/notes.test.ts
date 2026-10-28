@@ -24,7 +24,7 @@ describe("observaciones rápidas", () => {
 
   it("ofrece la preparación de tortas sin confundir los tacos de la misma categoría", () => {
     const torta = getQuickNoteGroups({ name: "Torta de pierna", categoryName: "Tortas y tacos" }).flatMap((group) => group.notes);
-    expect(torta).toEqual(expect.arrayContaining(["Sin cebolla", "Con cebolla", "Sin col", "Con col", "Con salsa", "Sin salsa", "Sin frijoles", "Sin migajón", "Preparada en bolsa"]));
+    expect(torta).toEqual(expect.arrayContaining(["Sin cebolla", "Con cebolla", "Sin col", "Con col", "Sin verdura", "Sin rábano", "Con rábano", "Con salsa", "Sin salsa", "Sin frijoles", "Sin migajón", "Preparada en bolsa"]));
     const taco = getQuickNoteGroups({ name: "Taco sencillo", categoryName: "Tortas y tacos" }).flatMap((group) => group.notes);
     expect(taco).not.toContain("Sin migajón");
     expect(taco).not.toContain("Preparada en bolsa");
@@ -32,7 +32,7 @@ describe("observaciones rápidas", () => {
 
   it.each(["Pozole", "Tostada", "Quesadilla", "Flauta", "Sope", "Gordita", "Enchilada", "Taco dorado"])("ofrece verdura, salsa y lácteos para %s", (name) => {
     const notes = getQuickNoteGroups({ name }).flatMap((group) => group.notes);
-    expect(notes).toEqual(expect.arrayContaining(["Con col", "Sin col", "Con lechuga", "Sin lechuga", "Con picante", "Sin picante", "Con col y lechuga", "Sin crema", "Sin queso", "Sin crema ni queso", "Con salsa y queso", "Solo salsa"]));
+    expect(notes).toEqual(expect.arrayContaining(["Con col", "Sin col", "Con lechuga", "Sin lechuga", "Sin verdura", "Sin rábano", "Con rábano", "Con picante", "Sin picante", "Con col y lechuga", "Sin crema", "Sin queso", "Sin crema ni queso", "Con salsa y queso", "Solo salsa"]));
   });
 
   it("aprovecha la categoría de variantes con nombres genéricos y omite instrucciones de comida en bebidas", () => {
@@ -50,6 +50,10 @@ describe("observaciones rápidas", () => {
     ["Sin lácteos, Sin col, Bien caliente", "Con todo", "Bien caliente, Con todo"],
     ["Con todo, Bien caliente", "Sin salsa", "Bien caliente, Sin salsa"],
     ["Sin frijoles, Sin migajón", "Con frijoles", "Sin migajón, Con frijoles"],
+    ["Sin rábano, Bien caliente", "Con rábano", "Bien caliente, Con rábano"],
+    ["Con rabano, Con col, Sin crema", "Sin verdura", "Sin crema, Sin verdura"],
+    ["Sin verdura, Salsa aparte", "Con rábano", "Salsa aparte, Con rábano"],
+    ["Con todo", "Sin rábano", "Sin rábano"],
   ])("reemplaza indicaciones opuestas de %s con %s", (existing, next, expected) => {
     expect(toggleQuickNote(existing, next)).toBe(expected);
   });

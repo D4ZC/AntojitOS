@@ -15,6 +15,7 @@
     "dev:pos": "pnpm --filter @antojit-os/pos dev",
     "dev:print-agent": "pnpm --filter @antojit-os/print-agent dev",
     "pilot:init": "node scripts/pilot.mjs init",
+    "pilot:configure-cashier": "node scripts/pilot.mjs configure-cashier",
     "pilot:up": "node scripts/pilot.mjs up",
     "pilot:start": "node scripts/pilot.mjs start",
     "pilot:seed": "node scripts/pilot.mjs seed",

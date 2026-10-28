@@ -94,6 +94,7 @@ interface PrintJobRow extends DatabaseRow {
   ticket_id: string | null;
   receipt_id: string | null;
   shift_close_id: string | null;
+  precheck_id: string | null;
   kind:
     | "addition"
     | "cancellation"
@@ -101,7 +102,8 @@ interface PrintJobRow extends DatabaseRow {
     | "reprint"
     | "receipt"
     | "receipt_reprint"
-    | "shift_close";
+    | "shift_close"
+    | "precheck";
   status: "queued" | "claimed" | "completed" | "failed" | "cancelled";
   payload: Record<string, unknown> | string;
   attempts: number;
@@ -920,7 +922,8 @@ export class ProductionService {
              ON register_assignments.agent_id = $2
             AND register_assignments.register_id = COALESCE(
               receipt_shifts.register_id,
-              close_shifts.register_id
+              close_shifts.register_id,
+              jobs.register_id
             )
           WHERE jobs.site_id = $1
             AND jobs.status = 'queued' AND jobs.available_at <= now()
@@ -928,7 +931,7 @@ export class ProductionService {
             AND (
               (jobs.ticket_id IS NOT NULL AND center_assignments.agent_id IS NOT NULL)
               OR
-              ((jobs.receipt_id IS NOT NULL OR jobs.shift_close_id IS NOT NULL)
+              ((jobs.receipt_id IS NOT NULL OR jobs.shift_close_id IS NOT NULL OR jobs.precheck_id IS NOT NULL)
                 AND register_assignments.agent_id IS NOT NULL)
             )
           ORDER BY jobs.created_at, jobs.id
@@ -965,6 +968,7 @@ export class ProductionService {
           ticketId: job.ticket_id,
           receiptId: job.receipt_id,
           shiftCloseId: job.shift_close_id,
+          precheckId: job.precheck_id,
           kind: job.kind,
           attempt: attemptNumber,
           claimToken,

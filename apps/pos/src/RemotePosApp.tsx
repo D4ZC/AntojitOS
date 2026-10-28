@@ -1,3 +1,5 @@
+import { CustomerPicker } from "./CustomerPicker";
+import type { CustomersApi } from "./customers";
 import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AccountingPanel } from "./AccountingPanel";
 import { CatalogPricesEditor, type CatalogPricingApi } from "./CatalogPricesEditor";
@@ -9,6 +11,7 @@ import type {
   AccountManagementOptions,
   AccountSummary,
   CashShiftClose,
+  BlindCashShiftClose,
   CashShiftContext,
   CashShiftReport,
   CatalogCategory,
@@ -31,13 +34,13 @@ import { ReasonPresets } from "./ReasonPresets";
 import { MAX_NOTE_LENGTH, toggleQuickNote } from "./notes";
 import { OrderBuilder, type OrderBuilderLine } from "./OrderBuilder";
 import { QuickNotes } from "./QuickNotes";
-import { ReceiptPaper, ReceiptPrintControls, type ReceiptPrintingApi } from "./ReceiptPrinting";
+import { ReceiptPaper, ReceiptPrintControls, PrecheckPaper, PrecheckPrintControls, type ReceiptPrintingApi } from "./ReceiptPrinting";
 import { ProductionPrintControls, type ProductionPrintingApi } from "./ProductionPrinting";
 import { type SeasonalMenuApi, SeasonalMenuEditor } from "./SeasonalMenuEditor";
 
 const TERMINAL_STORAGE_KEY = "antojit-os.terminal.v1";
 
-export interface RemoteApi extends SeasonalMenuApi, CatalogPricingApi, AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
+export interface RemoteApi extends CustomersApi, SeasonalMenuApi, CatalogPricingApi, AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi {
   setAccessToken(accessToken?: string): void;
   registerTerminal(input: {
     bootstrapToken: string;
@@ -56,6 +59,7 @@ export interface RemoteApi extends SeasonalMenuApi, CatalogPricingApi, Accountin
     tableId?: string;
     guestCount: number;
     reference?: string;
+    customerId?: string | null;
     customerName?: string | null;
     scheduledFor?: string | null;
   }): Promise<{ id: string }>;
@@ -77,7 +81,8 @@ export interface RemoteApi extends SeasonalMenuApi, CatalogPricingApi, Accountin
       methodCode: "CASH" | "CARD" | "TRANSFER";
       declaredInCents: number;
     }>;
-  }): Promise<CashShiftClose>;
+  }): Promise<CashShiftClose | BlindCashShiftClose>;
+  cashShiftCloses(): Promise<CashShiftClose[]>;
   paymentMethods(): Promise<PaymentMethod[]>;
   checkoutAccount(
     accountId: string,
@@ -88,6 +93,7 @@ export interface RemoteApi extends SeasonalMenuApi, CatalogPricingApi, Accountin
     receiptId: string,
     input: { kind: "cancellation" | "refund"; reason: string },
   ): Promise<{ id: string }>;
+  printPrecheck(precheckId: string): Promise<{ status: string; requeued: boolean }>;
   createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck>;
   applyAccountAdjustment(
     accountId: string,
@@ -106,7 +112,7 @@ export interface RemoteApi extends SeasonalMenuApi, CatalogPricingApi, Accountin
   ): Promise<{ accountVersion: number }>;
   updateAccountDetails(
     accountId: string,
-    input: { expectedVersion: number; customerName?: string | null; scheduledFor?: string | null },
+    input: { expectedVersion: number; customerId?: string | null; customerName?: string | null; scheduledFor?: string | null },
   ): Promise<{ accountVersion: number }>;
   updateAccountContext(
     accountId: string,
@@ -210,12 +216,13 @@ const scheduledLabel = (value: string): string => new Date(value).toLocaleString
 const moneyInput = (cents: number): string => (cents / 100).toFixed(2);
 
 const moneyInputToCents = (value: string): number | null => {
+  if (!value.trim()) return null;
   const amount = Number(value.replace(",", "."));
   if (!Number.isFinite(amount) || amount < 0) return null;
   return Math.round(amount * 100);
 };
 
-type PaymentMode = "cash" | "card" | "combined";
+type PaymentMode = "cash" | "card" | "transfer" | "combined";
 
 export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }: RemotePosAppProps) => {
   const api = useMemo<RemoteApi>(
@@ -238,6 +245,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [editingItem, setEditingItem] = useState<RemoteOrderItem | null>(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const [customerIdDraft, setCustomerIdDraft] = useState<string | null>(null);
   const [customerNameDraft, setCustomerNameDraft] = useState("");
   const [scheduledDraft, setScheduledDraft] = useState("");
   const [scheduleEnabled, setScheduleEnabled] = useState(false);
@@ -272,7 +280,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   const [deliveryOpen, setDeliveryOpen] = useState(false);
   const [deliveryAccount, setDeliveryAccount] = useState<ServiceAccount | null>(null);
   const [cashReport, setCashReport] = useState<CashShiftReport | null>(null);
-  const [cashClose, setCashClose] = useState<CashShiftClose | null>(null);
+  const [cashClose, setCashClose] = useState<CashShiftClose | BlindCashShiftClose | null>(null);
+  const [closedShifts, setClosedShifts] = useState<CashShiftClose[]>([]);
   const [recentReceipts, setRecentReceipts] = useState<SalesReceiptSummary[]>([]);
   const [cashPanelError, setCashPanelError] = useState<string | null>(null);
   const [cashMovementDirection, setCashMovementDirection] = useState<"in" | "out">("out");
@@ -362,6 +371,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   }, [api, session, account?.id, account?.scheduledFor, account?.scheduleDispatchedAt, busy]);
 
   const editDetails = (current: ServiceAccount, enableSchedule = false) => {
+    setCustomerIdDraft(current.customerId ?? null);
     setCustomerNameDraft(current.customerName ?? "");
     setScheduledDraft(localDateTime(current.scheduledFor));
     setScheduleEnabled(enableSchedule || Boolean(current.scheduledFor && !current.scheduleDispatchedAt));
@@ -385,6 +395,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     try {
       await api.updateAccountDetails(account.id, {
         expectedVersion: account.version,
+        customerId: customerIdDraft,
         customerName: customerNameDraft.trim() || null,
         ...(scheduleChanged ? { scheduledFor: nextSchedule?.toISOString() ?? null } : {}),
       });
@@ -446,7 +457,43 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     }
   };
 
+  const clearSessionViews = () => {
+    setCashPanelOpen(false);
+    setCashReport(null);
+    setCashClose(null);
+    setClosedShifts([]);
+    setRecentReceipts([]);
+    setCashShiftContext(null);
+    setCashDeclarations({});
+    setCashCloseConfirmation(false);
+    setCashPanelError(null);
+    setCashMovementAmount("");
+    setCashMovementReason("");
+    setReceiptAction(null);
+    setReceiptActionReason("");
+    setCheckoutOpen(false);
+    setCheckoutError(null);
+    setReceipt(null);
+    setPaymentMethods([]);
+    setCardReference("");
+    setCashTendered("0.00");
+    setCombinedCashAmount("0.00");
+    setOpeningFloat("500.00");
+    setPrecheck(null);
+    setBuilder(null);
+    setEditingItem(null);
+    setCancellingItem(null);
+    setDetailsOpen(false);
+    setCustomerIdDraft(null);
+    setCustomerNameDraft("");
+    setAccountChoices([]);
+    setManagementOptions(null);
+    setSeasonalEditorOpen(false);
+    setNotice("Ingresa con tu PIN para comenzar");
+  };
+
   const forgetTerminal = () => {
+    clearSessionViews();
     catalogRequest.current.authorized = false;
     catalogRequest.current.id += 1;
     storage.removeItem(TERMINAL_STORAGE_KEY);
@@ -471,6 +518,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
       }
       setBusy(false);
     }
+    clearSessionViews();
     catalogRequest.current.authorized = false;
     catalogRequest.current.id += 1;
     api.setAccessToken(undefined);
@@ -1049,13 +1097,15 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         tipInCents,
         tenderedInCents,
       });
-    } else if (paymentMode === "card") {
-      if (!hasMethod("CARD") || !cardReference.trim()) {
-        setCheckoutError("Captura la autorización o referencia de la tarjeta");
+    } else if (paymentMode === "card" || paymentMode === "transfer") {
+      const methodCode = paymentMode === "transfer" ? "TRANSFER" : "CARD";
+      const method = paymentMethods.find((entry) => entry.code === methodCode);
+      if (!method || (method.requiresReference && !cardReference.trim())) {
+        setCheckoutError(paymentMode === "transfer" ? "Captura la referencia de la transferencia" : "Captura la autorización o referencia de la tarjeta");
         return;
       }
       payments.push({
-        methodCode: "CARD",
+        methodCode,
         amountInCents: account.totalInCents,
         tipInCents,
         reference: cardReference.trim(),
@@ -1142,26 +1192,24 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
 
   const loadCashPanelData = async () => {
     const context = await api.currentCashShift();
-    const receipts = await api.recentReceipts();
+    const permissions = session?.user.permissions ?? [];
+    const [receipts, closes, methods] = await Promise.all([
+      permissions.includes("sales.receipt.read") ? api.recentReceipts() : Promise.resolve([]),
+      permissions.includes("cash.shift.reconcile") ? api.cashShiftCloses() : Promise.resolve([]),
+      api.paymentMethods(),
+    ]);
     setCashShiftContext(context);
     setRecentReceipts(receipts);
-    if (!context.shift) {
+    setClosedShifts(closes);
+    setPaymentMethods(methods);
+    if (!context.shift || !permissions.includes("cash.shift.preview")) {
       setCashReport(null);
-      setCashDeclarations({});
+      setCashDeclarations(Object.fromEntries(methods.map((method) => [method.code, ""])));
       return;
     }
     const report = await api.currentCashReport();
     setCashReport(report);
-    setCashDeclarations(Object.fromEntries(
-      report.paymentMethods.map((method) => [
-        method.code,
-        moneyInput(
-          method.code === "CASH"
-            ? report.cash.theoreticalInCents
-            : method.netInCents,
-        ),
-      ]),
-    ));
+    setCashDeclarations(Object.fromEntries(report.paymentMethods.map((method) => [method.code, moneyInput(method.code === "CASH" ? report.cash.theoreticalInCents : method.netInCents)])));
   };
 
   const openCashPanel = async () => {
@@ -1225,8 +1273,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   };
 
   const closeCurrentCashShift = async () => {
-    if (!cashReport) return;
-    const declarations = cashReport.paymentMethods.map((method) => ({
+    if (!cashShiftContext?.shift) return;
+    const declarations = (cashReport?.paymentMethods ?? paymentMethods).map((method) => ({
       methodCode: method.code,
       declaredInCents: moneyInputToCents(cashDeclarations[method.code] ?? "") ?? -1,
     }));
@@ -1238,12 +1286,12 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
     setCashPanelError(null);
     try {
       const result = await api.closeCashShift({
-        expectedVersion: cashReport.shift.version,
+        expectedVersion: cashShiftContext.shift.version,
         declarations,
       });
       setCashClose(result);
       setCashReport(null);
-      setCashShiftContext({ register: result.report.register, shift: null });
+      setCashShiftContext({ register: result.blind ? result.register : result.report.register, shift: null });
       setCashCloseConfirmation(false);
       setNotice("Turno de caja cerrado y corte enviado a impresión");
     } catch (closeError) {
@@ -1331,7 +1379,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
   }
 
   if (!account) {
-    const canManageCash = session.user.permissions.includes("cash.shift.preview");
+    const canManageCash = session.user.permissions.includes("cash.shift.read") && (session.user.permissions.includes("cash.shift.preview") || session.user.permissions.includes("cash.shift.close"));
     return (
       <main className="service-shell">
         <RemoteTopbar terminal={terminal} session={session} onLogout={logout} />
@@ -1413,7 +1461,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
             </section>
           </div>
         )}
-        {cashPanelOpen && (
+        {cashPanelOpen && canManageCash && (
           <div className="modal-backdrop" role="presentation">
             <section className="touch-modal cash-panel-modal" role="dialog" aria-modal="true" aria-labelledby="cash-panel-title">
               <div className="modal-heading">
@@ -1432,13 +1480,13 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                       <div key={declaration.method.code}>
                         <span>{declaration.method.name}</span>
                         <strong>{formatMoney(declaration.declaredInCents)}</strong>
-                        <small className={declaration.differenceInCents === 0 ? "balanced" : "difference"}>Diferencia {formatMoney(declaration.differenceInCents)}</small>
+                        {session.user.permissions.includes("cash.shift.preview") && "differenceInCents" in declaration && <small className={declaration.differenceInCents === 0 ? "balanced" : "difference"}>Diferencia {formatMoney(declaration.differenceInCents)}</small>}
                       </div>
                     ))}
                   </div>
                   <button className="access-primary" type="button" onClick={() => setCashPanelOpen(false)}>Finalizar</button>
                 </section>
-              ) : !cashShiftContext?.shift || !cashReport ? (
+              ) : !cashShiftContext?.shift ? (
                 <div className="cash-panel-content">
                   <section className="cash-open-panel">
                     <h3>Abrir turno de caja</h3>
@@ -1446,7 +1494,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                     <label>Fondo inicial<input aria-label="Fondo inicial de caja" type="number" inputMode="decimal" min="0" step="0.01" value={openingFloat} onChange={(event) => setOpeningFloat(event.target.value)} /></label>
                     <button className="access-primary" type="button" disabled={busy} onClick={() => void openShiftFromCashPanel()}>{busy ? "Abriendo…" : "Abrir turno"}</button>
                   </section>
-                  <section className="cash-panel-section">
+                  {session.user.permissions.includes("sales.receipt.read") && <section className="cash-panel-section">
                     <h3>Tickets recientes</h3>
                     <p>La reimpresión está disponible aunque el turno anterior ya esté cerrado.</p>
                     <div className="cash-receipt-list">
@@ -1460,10 +1508,11 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                       ))}
                     </div>
                   </section>
+                  }
                 </div>
               ) : (
                 <div className="cash-panel-content">
-                  <section className="cash-summary-grid" aria-label="Resumen del turno">
+                  {cashReport && session.user.permissions.includes("cash.shift.preview") && <><section className="cash-summary-grid" aria-label="Resumen del turno">
                     <div><span>Venta neta</span><strong>{formatMoney(cashReport.sales.netSaleInCents)}</strong><small>{cashReport.sales.receiptCount} tickets</small></div>
                     <div><span>Efectivo teórico</span><strong>{formatMoney(cashReport.cash.theoreticalInCents)}</strong><small>Incluye fondo y movimientos</small></div>
                     <div><span>Devoluciones</span><strong>{formatMoney(cashReport.sales.refundedSaleInCents)}</strong><small>{cashReport.sales.refundCount} operaciones</small></div>
@@ -1477,7 +1526,9 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                     </div>
                   </section>
 
-                  <section className="cash-panel-section">
+                  </>}
+
+                  {session.user.permissions.includes("cash.movement.create") && <section className="cash-panel-section">
                     <h3>Entrada o salida de efectivo</h3>
                     <div className="cash-movement-form">
                       <div className="cash-direction-options">
@@ -1491,7 +1542,9 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                     </div>
                   </section>
 
-                  <section className="cash-panel-section">
+                  }
+
+                  {session.user.permissions.includes("sales.receipt.read") && <section className="cash-panel-section">
                     <h3>Tickets recientes</h3>
                     <div className="cash-receipt-list">
                       {recentReceipts.length === 0 && <p className="management-hint">Todavía no hay tickets.</p>}
@@ -1509,27 +1562,37 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                     </div>
                   </section>
 
+                  }
+
                   <section className="cash-panel-section cash-close-section">
                     <h3>Declaración y cierre</h3>
-                    <p>Cuenta el efectivo y compara los comprobantes antes de cerrar.</p>
+                    <p>Captura el efectivo contado y los comprobantes de cada forma de pago. El administrador revisará las diferencias.</p>
                     <div className="cash-declaration-grid">
-                      {cashReport.paymentMethods.map((method) => (
+                      {(cashReport?.paymentMethods ?? paymentMethods).map((method) => (
                         <label key={method.code}>{method.name}<input aria-label={`Declarado ${method.name}`} type="number" inputMode="decimal" min="0" step="0.01" value={cashDeclarations[method.code] ?? ""} onChange={(event) => setCashDeclarations((current) => ({ ...current, [method.code]: event.target.value }))} /></label>
                       ))}
                     </div>
-                    {cashReport.openAccountCount > 0 && <p className="form-error">Cierra o cancela las cuentas abiertas antes de cerrar caja.</p>}
+                    {(cashReport?.openAccountCount ?? 0) > 0 && <p className="form-error">Cierra o cancela las cuentas abiertas antes de cerrar caja.</p>}
                     {cashCloseConfirmation ? (
                       <div className="danger-confirmation">
                         <strong>¿Confirmas el cierre definitivo del turno?</strong>
                         <span>Después del cierre no se podrán registrar más cobros ni movimientos en este turno.</span>
-                        <div><button type="button" onClick={() => setCashCloseConfirmation(false)}>Seguir revisando</button><button className="danger-button" type="button" disabled={busy || cashReport.openAccountCount > 0} onClick={() => void closeCurrentCashShift()}>Confirmar cierre</button></div>
+                        <div><button type="button" onClick={() => setCashCloseConfirmation(false)}>Seguir revisando</button><button className="danger-button" type="button" disabled={busy || (cashReport?.openAccountCount ?? 0) > 0} onClick={() => void closeCurrentCashShift()}>Confirmar cierre</button></div>
                       </div>
                     ) : (
-                      <button className="danger-button cash-close-button" type="button" disabled={busy || cashReport.openAccountCount > 0} onClick={() => setCashCloseConfirmation(true)}>Cerrar turno de caja</button>
+                      <button className="danger-button cash-close-button" type="button" disabled={busy || (cashReport?.openAccountCount ?? 0) > 0} onClick={() => setCashCloseConfirmation(true)}>Cerrar turno de caja</button>
                     )}
                   </section>
                 </div>
               )}
+              {session.user.permissions.includes("cash.shift.reconcile") && closedShifts.length > 0 && <section className="cash-panel-section" aria-label="Conciliación de cortes">
+                <h3>Cortes registrados por cajero</h3>
+                {closedShifts.map((close) => <article className="cash-history-close" key={close.id}>
+                  <strong>{new Date(close.closedAt).toLocaleString("es-MX")} · {close.report.register.name}</strong>
+                  <span>Cajero: {close.closedBy?.displayName ?? close.report.shift.openedBy.displayName}</span>
+                  {close.declarations.map((declaration) => <div key={declaration.method.code}><strong>{declaration.method.name}</strong><span>Registrado: {formatMoney(declaration.theoreticalInCents)}</span><span>Declarado: {formatMoney(declaration.declaredInCents)}</span><span className={declaration.differenceInCents === 0 ? "balanced" : "difference"}>Diferencia: {formatMoney(declaration.differenceInCents)}</span></div>)}
+                </article>)}
+              </section>}
             </section>
           </div>
         )}
@@ -1709,20 +1772,10 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         <div className="modal-backdrop" role="presentation">
           <section className="touch-modal precheck-modal" role="dialog" aria-modal="true" aria-labelledby="precheck-title">
             <div className="modal-heading"><div><span className="eyebrow">Vista previa de cobro</span><h2 id="precheck-title">Precuenta #{precheck.sequence}</h2></div><button type="button" aria-label="Cerrar" onClick={() => setPrecheck(null)}>×</button></div>
-            <div className="precheck-meta"><strong>AntojitOS</strong><span>{serviceLabel(precheck.account)}</span><small>{new Date(precheck.generatedAt).toLocaleString("es-MX")}</small></div>
-            <div className="precheck-items">
-              {precheck.account.items.filter((item) => item.preparationState !== "cancelled").map((item) => (
-                <div key={item.id}><span>{item.quantity} × {item.productName}</span><strong>{formatMoney(item.lineTotalInCents)}</strong></div>
-              ))}
-            </div>
-            <div className="precheck-totals">
-              <div><span>Subtotal</span><span>{formatMoney(precheck.account.totals.subtotalInCents)}</span></div>
-              {precheck.account.totals.discountInCents > 0 && <div><span>Descuento</span><span>− {formatMoney(precheck.account.totals.discountInCents)}</span></div>}
-              <div><span>IVA</span><span>{formatMoney(precheck.account.totals.taxInCents)}</span></div>
-              <div><strong>Total</strong><strong>{formatMoney(precheck.account.totalInCents)}</strong></div>
-            </div>
+            <PrecheckPaper precheck={precheck} />
+            <PrecheckPrintControls precheck={precheck} printPrecheck={(id) => api.printPrecheck(id)} disabled={busy} />
             <p className="modal-help">Documento informativo; todavía no representa un pago ni cierra la cuenta.</p>
-            <div className="modal-actions single-action"><button className="access-primary" type="button" onClick={() => setPrecheck(null)}>Cerrar precuenta</button></div>
+            <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setPrecheck(null)}>Cerrar precuenta</button>{canCapturePayment && <button className="access-primary" type="button" disabled={busy || pendingCount > 0 || account.totalInCents <= 0} onClick={() => { setPrecheck(null); void openCheckout(); }}>Pagar</button>}</div>
           </section>
         </div>
       )}
@@ -1737,6 +1790,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                 <div className="payment-mode-options" aria-label="Forma de pago">
                   <button className={paymentMode === "cash" ? "selected" : ""} type="button" aria-pressed={paymentMode === "cash"} onClick={() => choosePaymentMode("cash")}>Efectivo</button>
                   <button className={paymentMode === "card" ? "selected" : ""} type="button" aria-pressed={paymentMode === "card"} onClick={() => choosePaymentMode("card")}>Tarjeta</button>
+                  <button className={paymentMode === "transfer" ? "selected" : ""} type="button" disabled={!paymentMethods.some((method) => method.code === "TRANSFER")} aria-pressed={paymentMode === "transfer"} onClick={() => choosePaymentMode("transfer")}>Transferencia</button>
                   <button className={paymentMode === "combined" ? "selected" : ""} type="button" aria-pressed={paymentMode === "combined"} onClick={() => choosePaymentMode("combined")}>Combinado</button>
                 </div>
 
@@ -1753,6 +1807,7 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
 
                 <section className="checkout-section payment-entry">
                   {paymentMode === "cash" && <label>Efectivo recibido<input aria-label="Efectivo recibido" type="number" inputMode="decimal" min="0" step="0.01" value={cashTendered} onChange={(event) => setCashTendered(event.target.value)} /></label>}
+                  {paymentMode === "transfer" && <label>Referencia de transferencia<input aria-label="Referencia de transferencia" maxLength={80} value={cardReference} onChange={(event) => setCardReference(event.target.value)} /></label>}
                   {paymentMode === "card" && <label>Autorización o referencia<input aria-label="Autorización o referencia" maxLength={80} value={cardReference} onChange={(event) => setCardReference(event.target.value)} /></label>}
                   {paymentMode === "combined" && (
                     <>
@@ -1761,13 +1816,14 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
                       <label>Autorización de tarjeta<input aria-label="Autorización de tarjeta" maxLength={80} value={cardReference} onChange={(event) => setCardReference(event.target.value)} /></label>
                     </>
                   )}
+                  {(paymentMode === "cash" || paymentMode === "combined") && <div className="cash-quick-amounts" aria-label="Cantidades rápidas de efectivo">{[50, 100, 150, 200, 500].map((amount) => <button key={amount} type="button" disabled={busy} aria-label={`Recibido $${amount}`} onClick={() => setCashTendered(moneyInput(amount * 100))}>${amount}</button>)}</div>}
                 </section>
 
                 <div className="checkout-summary">
                   <div><span>Cuenta</span><strong>{formatMoney(account.totalInCents)}</strong></div>
                   <div><span>Propina</span><strong>{formatMoney(checkoutTipInCents)}</strong></div>
                   {paymentMode === "combined" && <><div><span>Efectivo aplicado</span><span>{formatMoney(checkoutCombinedCashInCents)}</span></div><div><span>Tarjeta</span><span>{formatMoney(checkoutCardInCents + checkoutTipInCents)}</span></div></>}
-                  {paymentMode !== "card" && <div className="change-row"><span>Cambio</span><strong>{formatMoney(checkoutChangeInCents)}</strong></div>}
+                  {(paymentMode === "cash" || paymentMode === "combined") && <div className="change-row"><span>Cambio</span><strong>{formatMoney(checkoutChangeInCents)}</strong></div>}
                   <div className="checkout-total"><span>Total a registrar</span><strong>{formatMoney(account.totalInCents + checkoutTipInCents)}</strong></div>
                 </div>
                 <div className="modal-actions"><button type="button" disabled={busy} onClick={() => setCheckoutOpen(false)}>Volver</button><button className="pay-confirm-button" type="button" disabled={busy} onClick={() => void capturePayment()}>{busy ? "Procesando…" : "Confirmar pago"}</button></div>
@@ -1872,7 +1928,8 @@ export const RemotePosApp = ({ api: injectedApi, storage = window.localStorage }
         <div className="modal-backdrop" role="presentation">
           <form className="touch-modal order-details-modal" role="dialog" aria-modal="true" aria-labelledby="order-details-title" onSubmit={(event) => void saveDetails(event)}>
             <div className="modal-heading"><div><span className="eyebrow">Datos opcionales</span><h2 id="order-details-title">Cliente y programación</h2></div><button type="button" aria-label="Cerrar" disabled={busy} onClick={() => setDetailsOpen(false)}>×</button></div>
-            <label>Nombre del cliente (opcional)<input value={customerNameDraft} maxLength={80} placeholder="Escribe el nombre del cliente" onChange={(event) => setCustomerNameDraft(event.target.value)} /></label>
+            {session.user.permissions.includes("customers.read") && <CustomerPicker api={api} value={customerIdDraft} customerName={customerNameDraft} disabled={busy} canCreate={session.user.permissions.includes("customers.manage")} onChange={(customer) => { setCustomerIdDraft(customer?.id ?? null); setCustomerNameDraft(customer?.name ?? ""); }} />}
+            <label>Nombre del cliente (opcional)<input value={customerNameDraft} maxLength={80} placeholder="Escribe el nombre del cliente" onChange={(event) => { setCustomerIdDraft(null); setCustomerNameDraft(event.target.value); }} /></label>
             <label className="schedule-toggle"><input type="checkbox" checked={scheduleEnabled} onChange={(event) => setScheduleEnabled(event.target.checked)} />Programar envío a cocina</label>
             {scheduleEnabled && <label>Fecha y hora de envío a cocina<input type="datetime-local" required value={scheduledDraft} onChange={(event) => setScheduledDraft(event.target.value)} /></label>}
             <p className="modal-help">{scheduleEnabled ? "Agrega los productos y guarda el pedido. El servidor lo enviará automáticamente a cocina a esta hora, aunque cierres la tablet." : "Puedes agregar un cliente y programar este pedido más adelante."}</p>

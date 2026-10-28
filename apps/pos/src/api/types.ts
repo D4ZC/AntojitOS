@@ -144,7 +144,10 @@ export interface ServiceAccount {
   status: string;
   reference: string | null;
   guestCount: number;
+  customerId?: string | null;
   customerName?: string | null;
+  customerPhone?: string | null;
+  customerAddress?: string | null;
   scheduledFor?: string | null;
   scheduleDispatchedAt?: string | null;
   scheduleError?: string | null;
@@ -187,7 +190,10 @@ export interface OpenCounterAccount {
   itemCount: number;
   totalInCents: number;
   openedAt: string;
+  customerId?: string | null;
   customerName?: string | null;
+  customerPhone?: string | null;
+  customerAddress?: string | null;
   scheduledFor?: string | null;
   scheduleDispatchedAt?: string | null;
   scheduleError?: string | null;
@@ -213,12 +219,13 @@ export interface Precheck {
 }
 
 export interface CashShiftContext {
+  blind?: boolean;
   register: { id: string; code: string; name: string };
   shift: null | {
     id: string;
     status: "open";
     version: number;
-    openingFloatInCents: number;
+    openingFloatInCents?: number;
     openedBy: { id: string; displayName: string };
     openedAt: string;
   };
@@ -268,6 +275,8 @@ export interface CashShiftReport {
 }
 
 export interface CashShiftClose {
+  closedBy?: { id: string; displayName: string };
+  blind?: false;
   id: string;
   status: "closed";
   closedAt: string;
@@ -277,6 +286,19 @@ export interface CashShiftClose {
     theoreticalInCents: number;
     declaredInCents: number;
     differenceInCents: number;
+  }>;
+}
+
+export interface BlindCashShiftClose {
+  id: string;
+  status: "closed";
+  closedAt: string;
+  blind: true;
+  register: CashShiftContext["register"];
+  shift: { id: string; openedAt: string };
+  declarations: Array<{
+    method: { id: string; code: "CASH" | "CARD" | "TRANSFER"; name: string };
+    declaredInCents: number;
   }>;
 }
 

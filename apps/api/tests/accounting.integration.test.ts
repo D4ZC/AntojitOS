@@ -20,7 +20,7 @@ import type { TestDatabase } from "./test-database.js";
 
 const actor = (): AuthContext => ({ sessionId: crypto.randomUUID(), siteId: fixtureIds.site,
   userId: fixtureIds.user, terminalId: fixtureIds.terminalOne, displayName: "Administrador",
-  permissions: ["accounting.manage"] });
+  permissions: ["accounting.manage", "cash.shift.preview"] });
 const today = () => new Intl.DateTimeFormat("en-CA", { timeZone: "America/Mexico_City",
   year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date());
 const services = (database: TestDatabase) => {

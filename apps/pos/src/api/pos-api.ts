@@ -1,3 +1,4 @@
+import type { Customer, CustomersApi, CreateCustomerInput } from "../customers";
 import type { AccountingApi } from "../accounting";
 import type { DeliveryApi, DeliveryAssignment, DeliveryDriver, SharedDelivery } from "../delivery";
 import type { ReceiptPrintingApi } from "../ReceiptPrinting";
@@ -8,6 +9,7 @@ import type {
   AccountManagementOptions,
   AccountSummary,
   CashShiftClose,
+  BlindCashShiftClose,
   CashShiftContext,
   CashShiftReport,
   CatalogCategory,
@@ -50,7 +52,7 @@ const errorMessage = (body: unknown): string => {
   return "No fue posible completar la operación";
 };
 
-export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi, CatalogPricingApi {
+export class PosApi implements CustomersApi, AccountingApi, DeliveryApi, ReceiptPrintingApi, ProductionPrintingApi, CatalogPricingApi {
   private readonly productionPrintKeys = new Map<string, string>();
 
   constructor(
@@ -156,6 +158,19 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
     });
   }
 
+  async customers(): Promise<Customer[]> {
+    const result = await this.request<{ customers: Customer[] }>("/v1/customers");
+    return result.customers;
+  }
+
+  createCustomer(input: CreateCustomerInput): Promise<{ customer: Customer }> {
+    return this.request("/v1/customers", { method: "POST", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
+  updateCustomer(id: string, input: Partial<CreateCustomerInput> & { expectedVersion: number; active?: boolean }): Promise<{ customer: Customer }> {
+    return this.request(`/v1/customers/${id}`, { method: "PATCH", idempotencyKey: this.createIdempotencyKey(), body: input });
+  }
+
   serviceLayout(): Promise<ServiceLayout> {
     return this.request("/v1/service-layout");
   }
@@ -165,6 +180,7 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
     tableId?: string;
     guestCount: number;
     reference?: string;
+    customerId?: string | null;
     customerName?: string | null;
     scheduledFor?: string | null;
   }): Promise<{ id: string }> {
@@ -195,6 +211,11 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
 
   accountManagementOptions(accountId: string): Promise<AccountManagementOptions> {
     return this.request(`/v1/accounts/${accountId}/management-options`);
+  }
+
+  async cashShiftCloses(): Promise<CashShiftClose[]> {
+    const result = await this.request<{ closes: CashShiftClose[] }>("/v1/cash/shifts/closes");
+    return result.closes;
   }
 
   currentCashShift(): Promise<CashShiftContext> {
@@ -231,7 +252,7 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
       methodCode: "CASH" | "CARD" | "TRANSFER";
       declaredInCents: number;
     }>;
-  }): Promise<CashShiftClose> {
+  }): Promise<CashShiftClose | BlindCashShiftClose> {
     return this.request("/v1/cash/shifts/current/close", {
       method: "POST",
       idempotencyKey: this.createIdempotencyKey(),
@@ -299,6 +320,12 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
     });
   }
 
+  printPrecheck(precheckId: string): Promise<{ status: string; requeued: boolean }> {
+    return this.request(`/v1/sales/prechecks/${precheckId}/print`, {
+      method: "POST", idempotencyKey: this.createIdempotencyKey(), body: {},
+    });
+  }
+
   createPrecheck(accountId: string, expectedVersion: number): Promise<Precheck> {
     return this.request(`/v1/accounts/${accountId}/prechecks`, {
       method: "POST",
@@ -343,7 +370,8 @@ export class PosApi implements AccountingApi, DeliveryApi, ReceiptPrintingApi, P
     accountId: string,
     input: {
       expectedVersion: number;
-      customerName?: string | null;
+      customerId?: string | null;
+    customerName?: string | null;
       scheduledFor?: string | null;
     },
   ): Promise<{ accountVersion: number }> {

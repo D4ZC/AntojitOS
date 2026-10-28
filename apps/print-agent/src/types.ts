@@ -58,11 +58,37 @@ export interface ReceiptPayload {
   reprint?: { reason: string; requestedBy: string };
 }
 
+export interface PrecheckPayload {
+  kind: "precheck";
+  precheck: {
+    id: string;
+    sequence: number;
+    generatedAt: string;
+    account: ReceiptPayload["receipt"]["account"] & {
+      totalInCents: number;
+      totals: { subtotalInCents: number; discountInCents: number; taxInCents: number };
+    };
+  };
+}
+
+export interface BlindShiftClosePayload {
+  kind: "shift_close";
+  close: {
+    id: string;
+    closedAt: string;
+    blind: true;
+    register: { name: string };
+    shift: { openedAt: string };
+    declarations: Array<{ method: { name: string }; declaredInCents: number }>;
+  };
+}
+
 export interface ShiftClosePayload {
   kind: "shift_close";
   close: {
     id: string;
     closedAt: string;
+    blind?: false;
     report: {
       register: { name: string };
       shift: { openedAt: string };
@@ -85,13 +111,14 @@ export interface ShiftClosePayload {
   };
 }
 
-export type PrintPayload = ProductionPayload | ReceiptPayload | ShiftClosePayload;
+export type PrintPayload = ProductionPayload | ReceiptPayload | ShiftClosePayload | BlindShiftClosePayload | PrecheckPayload;
 
 export interface PrintJob {
   id: string;
   ticketId: string | null;
   receiptId: string | null;
   shiftCloseId: string | null;
+  precheckId?: string | null;
   kind: PrintPayload["kind"];
   attempt: number;
   claimToken: string;

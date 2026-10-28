@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Inject,
   Injectable,
   NotFoundException,
@@ -86,6 +87,31 @@ const shiftBody = (shift: OpenCashShiftRow) => ({
   openedAt: new Date(shift.opened_at).toISOString(),
 });
 
+const canViewCashTotals = (actor: AuthContext) =>
+  actor.permissions.includes("cash.shift.preview") || actor.permissions.includes("cash.shift.reconcile");
+
+const visibleShift = (shift: ReturnType<typeof shiftBody>, actor: AuthContext) => ({
+  ...shift,
+  openingFloatInCents: canViewCashTotals(actor) ? shift.openingFloatInCents : undefined,
+});
+
+type CashReport = Awaited<ReturnType<CashService["currentReport"]>>;
+interface CashCloseSnapshot {
+  id: string;
+  status: "closed";
+  closedAt: string;
+  closedBy: { id: string; displayName: string };
+  register: CashReport["register"];
+  shift: Omit<CashReport["shift"], "status"> & { status: "closed" };
+  report: CashReport;
+  declarations: Array<{
+    method: { id: string; code: "CASH" | "CARD" | "TRANSFER"; name: string };
+    theoreticalInCents: number;
+    declaredInCents: number;
+    differenceInCents: number;
+  }>;
+}
+
 @Injectable()
 export class CashService {
   constructor(
@@ -114,13 +140,14 @@ export class CashService {
     );
     const shift = result.rows[0];
     return {
+      blind: !canViewCashTotals(actor),
       register: { id: register.id, code: register.code, name: register.name },
-      shift: shift ? shiftBody(shift) : null,
+      shift: shift ? visibleShift(shiftBody(shift), actor) : null,
     };
   }
 
-  openShift(input: OpenCashShiftDto, key: string, actor: AuthContext) {
-    return this.idempotency.execute(
+  async openShift(input: OpenCashShiftDto, key: string, actor: AuthContext) {
+    const result = await this.idempotency.execute(
       {
         siteId: actor.siteId,
         scope: "cash.shift.open",
@@ -208,12 +235,29 @@ export class CashService {
         return { status: 201, body };
       },
     );
+    return { ...result, body: {
+      ...result.body,
+      blind: !canViewCashTotals(actor),
+      shift: visibleShift(result.body.shift, actor),
+    } };
   }
 
   async currentReport(actor: AuthContext) {
+    if (!canViewCashTotals(actor)) throw new ForbiddenException("Permiso insuficiente para consultar importes registrados");
     const shift = await this.findOpenShift(this.database, actor.siteId);
     if (!shift) throw new ConflictException("No existe un turno de caja abierto");
     return this.buildReport(this.database, shift, actor.siteId);
+  }
+
+  async closedShifts(actor: AuthContext) {
+    if (!actor.permissions.includes("cash.shift.reconcile")) {
+      throw new ForbiddenException("Permiso insuficiente para conciliar cortes");
+    }
+    const result = await this.database.query<{ snapshot: Record<string, unknown> | string }>(
+      `SELECT snapshot FROM cash_shift_closes WHERE site_id = $1
+       ORDER BY closed_at DESC, id DESC LIMIT 50`, [actor.siteId],
+    );
+    return { closes: result.rows.map((row) => typeof row.snapshot === "string" ? JSON.parse(row.snapshot) as Record<string, unknown> : row.snapshot) };
   }
 
   createMovement(input: CreateCashMovementDto, key: string, actor: AuthContext) {
@@ -280,8 +324,8 @@ export class CashService {
     );
   }
 
-  closeShift(input: CloseCashShiftDto, key: string, actor: AuthContext) {
-    return this.idempotency.execute(
+  async closeShift(input: CloseCashShiftDto, key: string, actor: AuthContext) {
+    const result = await this.idempotency.execute(
       {
         siteId: actor.siteId,
         scope: "cash.shift.close",
@@ -343,6 +387,8 @@ export class CashService {
           id: closeId,
           status: "closed" as const,
           closedAt,
+          closedBy: { id: actor.userId, displayName: actor.displayName },
+          register: report.register,
           shift: { ...report.shift, status: "closed" as const, version: shift.version + 1 },
           report,
           declarations: declarations.map(({ method, ...values }) => ({
@@ -398,7 +444,7 @@ export class CashService {
             randomUUID(),
             actor.siteId,
             closeId,
-            JSON.stringify({ kind: "shift_close", close: body }),
+            JSON.stringify({ kind: "shift_close", close: this.visibleClose(body, actor) }),
           ],
         );
         await this.audit.append(transaction, {
@@ -417,11 +463,28 @@ export class CashService {
           eventType: "cash.shift.closed",
           aggregateType: "cash_shift",
           aggregateId: shift.id,
-          payload: { closeId, shiftId: shift.id, declarations: body.declarations },
+          payload: { closeId, shiftId: shift.id },
         });
         return { status: 201, body };
       },
     );
+    // Redact after idempotency replay as well: a different operator may reuse a key.
+    return { ...result, body: this.visibleClose(result.body, actor) };
+  }
+
+  private visibleClose(body: CashCloseSnapshot, actor: AuthContext) {
+    const visible = canViewCashTotals(actor);
+    return {
+      ...body,
+      blind: !visible,
+      shift: { ...body.shift, openingFloatInCents: visible ? body.shift.openingFloatInCents : undefined },
+      report: visible ? body.report : undefined,
+      declarations: body.declarations.map((declaration) => ({
+        ...declaration,
+        theoreticalInCents: visible ? declaration.theoreticalInCents : undefined,
+        differenceInCents: visible ? declaration.differenceInCents : undefined,
+      })),
+    };
   }
 
   async lockOpenShift(

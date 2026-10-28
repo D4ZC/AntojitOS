@@ -431,6 +431,11 @@ function Invoke-AntojitFolderUpdate {
         Save-AntojitUpdateRecord -Path $pendingPath -Record $pending
         $codeApplied = $true
         Sync-AntojitUpdateSource -SourcePath $snapshot -DestinationPath $installation.Root
+        # Persist the new cashier credential before the API migration creates it.
+        # Recovery may intentionally retain an older application without this command.
+        if (Select-String -LiteralPath (Join-Path $installation.Root 'scripts/pilot.mjs') -Pattern 'ensurePilotCashierPin' -SimpleMatch -Quiet) {
+            Invoke-AntojitPilot -Root $installation.Root -Command 'configure-cashier'
+        }
         $pending.Stage = 'deploying'
         $pending.MayHaveMigrated = $true
         Save-AntojitUpdateRecord -Path $pendingPath -Record $pending

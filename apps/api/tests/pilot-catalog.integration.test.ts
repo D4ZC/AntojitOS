@@ -123,6 +123,8 @@ describe("catálogo real del piloto", () => {
       "Paquetes",
       "Postres",
       "Bebidas",
+      "Chamorros",
+      "Extras",
     ]);
     expect(
       catalog.categories.filter((category) => category.seasonal).map((category) => category.code),
@@ -139,7 +141,6 @@ describe("catálogo real del piloto", () => {
       ["Medio litro", 8000],
       ["Litro", 10000],
       ["Bote", 15000],
-      ["Tostada extra", 300],
       ["Caldo ½ litro", 2000],
       ["Caldo litro", 3000],
     ]);
@@ -177,6 +178,25 @@ describe("catálogo real del piloto", () => {
     ]);
 
     expect(byCode("FLAUTA")?.priceInCents).toBe(3500);
+    expect(byCode("AGUA-FRESCA-MEDIO-LITRO")).toMatchObject({
+      name: "Agua fresca 1/2 litro", priceInCents: 2500, available: true,
+    });
+    expect(byCode("AGUA-FRESCA-MEDIO-LITRO")?.modifierGroups)
+      .toEqual(byCode("AGUA-FRESCA-LITRO")?.modifierGroups);
+    expect(catalog.categories.find((category) => category.code === "CHAMORROS")?.products)
+      .toEqual([
+        expect.objectContaining({ code: "CHAMORRO-MEDIO", priceInCents: 10000, available: true }),
+        expect.objectContaining({ code: "CHAMORRO-COMPLETO", priceInCents: 17000, available: true }),
+      ]);
+    expect(catalog.categories.find((category) => category.code === "EXTRAS")?.products
+      .map((product) => [product.name, product.priceInCents])).toEqual([
+      ["Pieza tostada", 300], ["Pata", 2000], ["Frijoles Adobados", 3000],
+      ["Arroz porción", 3000], ["Tortillas", 500],
+    ]);
+    expect(byCode("ENCHILADAS-ORDEN-4")?.modifierGroups[0]?.options.map((option) => option.name))
+      .toEqual(["Queso", "Queso con cebolla", "Carne", "Combinadas (2 carne, 2 queso)"]);
+    expect(byCode("ENCHILADA-PIEZA")?.modifierGroups[0]?.options.map((option) => option.name))
+      .toEqual(["Queso", "Queso con cebolla", "Carne"]);
     expect(byCode("FLAUTA")?.modifierGroups[0]).toMatchObject({
       name: "Relleno",
       minimumSelections: 1,

@@ -238,3 +238,40 @@ describe("ticket térmico SRP-F310 de 80 mm", () => {
     expect(() => renderEscPos(thermalReceipt, { codePage: 256 })).toThrow();
   });
 });
+
+describe("precuenta y declaración de cajero", () => {
+  it("imprime datos del negocio y cuenta pendiente, sin inventar un pago", () => {
+    const ticket = renderPlainTicket({ kind: "precheck", precheck: {
+      id: "precheck-1", sequence: 2, generatedAt: "2026-10-28T18:00:00Z",
+      account: { tableName: null, reference: null, serviceType: "takeaway", customerName: "Ana",
+        items: [{ productName: "Medio chamorro", quantity: 1, preparationState: "sent", lineTotalInCents: 10000,
+          note: "Sin verdura", modifiers: [{ name: "Con rábano", quantity: 1 }] }],
+        totalInCents: 10000, totals: { subtotalInCents: 8621, taxInCents: 1379, discountInCents: 0 } },
+    } });
+    expect(ticket).toContain("Antojitos Mexicanos Frank");
+    expect(ticket).toContain("Carretera al Salto #6");
+    expect(ticket).toContain("San Jose del Castillo");
+    expect(ticket).toContain("Tel: 3330147392");
+    expect(ticket).toContain("PRECUENTA #2");
+    expect(ticket).toContain("CUENTA PENDIENTE DE PAGO");
+    expect(ticket).toContain("$100.00");
+    expect(ticket).toContain("Sin verdura");
+    expect(ticket).toContain("Con rábano");
+    expect(ticket).not.toContain("Recibido");
+    expect(ticket).not.toContain("Cambio");
+  });
+
+  it("imprime sólo las declaraciones de un corte ciego", () => {
+    const ticket = renderPlainTicket({ kind: "shift_close", close: {
+      id: "close-1", blind: true, closedAt: "2026-10-28T23:00:00Z",
+      register: { name: "Caja principal" }, shift: { openedAt: "2026-10-28T14:00:00Z" },
+      declarations: [{ method: { name: "Efectivo" }, declaredInCents: 50000 }, { method: { name: "Transferencia" }, declaredInCents: 20000 }],
+    } });
+    expect(ticket).toContain("DECLARACION DE CAJA");
+    expect(ticket).toContain("$500.00");
+    expect(ticket).toContain("Transferencia declarado:");
+    expect(ticket).not.toContain("teorico");
+    expect(ticket).not.toContain("Diferencia");
+    expect(ticket).not.toContain("Venta neta");
+  });
+});

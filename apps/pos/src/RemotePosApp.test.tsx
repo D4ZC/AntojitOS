@@ -253,6 +253,11 @@ const createApi = (overrides: Partial<RemoteApi> = {}): RemoteApi => ({
   updateDeliveryStatus: vi.fn(),
   refreshDelivery: vi.fn(),
   shareDelivery: vi.fn(),
+  customers: vi.fn().mockResolvedValue([]),
+  createCustomer: vi.fn(),
+  updateCustomer: vi.fn(),
+  cashShiftCloses: vi.fn().mockResolvedValue([]),
+  printPrecheck: vi.fn().mockResolvedValue({ status: "queued", requeued: false }),
   setAccessToken: vi.fn(),
   registerTerminal: vi.fn().mockResolvedValue(terminal),
   login: vi.fn().mockResolvedValue(session),
@@ -742,7 +747,7 @@ describe("POS conectado", () => {
     fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
 
     await waitFor(() => expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
-      expectedVersion: 1, customerName: "Doña Lupita", scheduledFor: new Date(date).toISOString(),
+      expectedVersion: 1, customerId: null, customerName: "Doña Lupita", scheduledFor: new Date(date).toISOString(),
     }));
     expect(await screen.findByText("Doña Lupita")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Envío automático programado/ })).toBeDisabled();
@@ -789,7 +794,7 @@ describe("POS conectado", () => {
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Cliente y programación" })).not.toBeInTheDocument());
     expect(api.openAccount).toHaveBeenCalledWith({ serviceType: "takeaway", guestCount: 2 });
     expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
-      expectedVersion: 0, customerName: "Doña Lupita", scheduledFor,
+      expectedVersion: 0, customerId: null, customerName: "Doña Lupita", scheduledFor,
     });
     expect(screen.getByRole("button", { name: /Envío automático programado/ })).toBeDisabled();
 
@@ -816,7 +821,7 @@ describe("POS conectado", () => {
     fireEvent.click(screen.getByRole("checkbox", { name: "Programar envío a cocina" }));
     fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
     await waitFor(() => expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
-      expectedVersion: 1, customerName: null, scheduledFor: null,
+      expectedVersion: 1, customerId: null, customerName: null, scheduledFor: null,
     }));
     expect(await screen.findByRole("button", { name: /Enviar comanda/ })).toBeEnabled();
   });
@@ -1198,4 +1203,153 @@ describe("POS conectado", () => {
     fireEvent.click(screen.getByRole("button", { name: "Confirmar" }));
     await waitFor(() => expect(api.refundReceipt).toHaveBeenCalledWith("receipt-1", { kind, reason: preset }));
   });
+  it("imprime la precuenta y abre Pagar sin registrar un cobro", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(sentAccount), createPrecheck: vi.fn().mockResolvedValue({ id: "precheck-1", sequence: 1, generatedAt: "2030-01-01T12:00:00Z", account: sentAccount }) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Precuenta" }));
+    await screen.findByRole("heading", { name: "Precuenta #1" });
+    fireEvent.click(screen.getByRole("button", { name: "Imprimir precuenta" }));
+    await waitFor(() => expect(api.printPrecheck).toHaveBeenCalledWith("precheck-1"));
+    expect(screen.getByText("Antojitos Mexicanos Frank")).toBeInTheDocument();
+    expect(screen.getByText("Tel: 3330147392")).toBeInTheDocument();
+    expect(api.checkoutAccount).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Pagar" }));
+    await screen.findByRole("heading", { name: "Cobrar Mesa 1" });
+    expect(api.checkoutAccount).not.toHaveBeenCalled();
+  });
+
+  it("cobra por transferencia y exige la referencia", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(sentAccount), paymentMethods: vi.fn().mockResolvedValue([...paymentMethods, { id: "transfer", code: "TRANSFER", name: "Transferencia", supportsChange: false, requiresReference: true }]) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Pago" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Transferencia" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pago" }));
+    expect(screen.getByRole("alert")).toHaveTextContent("referencia de la transferencia");
+    expect(api.checkoutAccount).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText("Referencia de transferencia"), { target: { value: "SPEI-123" } });
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pago" }));
+    await waitFor(() => expect(api.checkoutAccount).toHaveBeenCalledWith("account-1", { expectedVersion: 2, payments: [{ methodCode: "TRANSFER", amountInCents: 4200, tipInCents: 0, reference: "SPEI-123" }] }));
+  });
+
+  it("selecciona cantidades rápidas y conserva el cálculo de cambio", async () => {
+    storeTerminal();
+    const api = createApi({ account: vi.fn().mockResolvedValue(sentAccount) });
+    await loginAndSelectTable(api);
+    fireEvent.click(screen.getByRole("button", { name: "Pago" }));
+    await screen.findByRole("heading", { name: "Cobrar Mesa 1" });
+    for (const amount of [50, 100, 150, 200, 500]) {
+      fireEvent.click(screen.getByRole("button", { name: `Recibido $${amount}` }));
+      expect(screen.getByLabelText("Efectivo recibido")).toHaveValue(amount);
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar pago" }));
+    await waitFor(() => expect(api.checkoutAccount).toHaveBeenCalledWith("account-1", { expectedVersion: 2, payments: [{ methodCode: "CASH", amountInCents: 4200, tipInCents: 0, tenderedInCents: 50000 }] }));
+  });
+
+  it("permite corte ciego al cajero sin consultar ventas ni diferencias", async () => {
+    storeTerminal();
+    const cashier = { ...session, user: { ...session.user, permissions: ["cash.shift.read", "cash.shift.open", "cash.shift.close", "sales.payment.capture"] } };
+    const api = createApi({ login: vi.fn().mockResolvedValue(cashier), closeCashShift: vi.fn().mockResolvedValue({ id: "blind-close", status: "closed", closedAt: "2030-01-01T13:00:00Z", blind: true, register: cashShiftContext.register, shift: { id: "shift-1", openedAt: "2030-01-01T10:00:00Z" }, declarations: paymentMethods.map((method) => ({ method, declaredInCents: 1000 })) }) });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "3456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Caja y corte" }));
+    await screen.findByRole("heading", { name: "Declaración y cierre" });
+    expect(api.currentCashReport).not.toHaveBeenCalled();
+    expect(api.recentReceipts).not.toHaveBeenCalled();
+    expect(api.cashShiftCloses).not.toHaveBeenCalled();
+    expect(screen.queryByText("Efectivo teórico")).not.toBeInTheDocument();
+    for (const method of paymentMethods) {
+      const field = screen.getByLabelText(`Declarado ${method.name}`);
+      expect(field).toHaveValue(null);
+      fireEvent.change(field, { target: { value: "10" } });
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar turno de caja" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirmar cierre" }));
+    await screen.findByRole("heading", { name: "Turno cerrado" });
+    expect(screen.queryByText(/Diferencia/)).not.toBeInTheDocument();
+    expect(api.closeCashShift).toHaveBeenCalledWith({ expectedVersion: cashShiftContext.shift!.version, declarations: paymentMethods.map((method) => ({ methodCode: method.code, declaredInCents: 1000 })) });
+  });
+
+  it.each([
+    { label: "Venta rápida", serviceType: "quick" as const, scheduled: false },
+    { label: "Para llevar", serviceType: "takeaway" as const, scheduled: false },
+    { label: "Programar pedido", serviceType: "takeaway" as const, scheduled: true },
+  ])("selecciona un cliente frecuente en $label y guarda su identificador", async ({ label, serviceType, scheduled }) => {
+    storeTerminal();
+    const customer = { id: "customer-ana", name: "Ana López", phone: "3331234567", address: "El Salto 6", notes: null,
+      active: true, version: 0, createdAt: "2026-10-28T12:00:00Z" };
+    const clientSession = { ...session, user: { ...session.user, permissions: [...session.user.permissions, "customers.read", "customers.manage"] } };
+    let current: ServiceAccount = { ...emptyAccount, serviceType, tableId: null, tableName: null, customerId: null };
+    const date = "2099-10-24T18:30";
+    const api = createApi({ login: vi.fn().mockResolvedValue(clientSession), customers: vi.fn().mockResolvedValue([customer]),
+      account: vi.fn().mockImplementation(async () => current),
+      updateAccountDetails: vi.fn().mockImplementation(async (_id, input) => {
+        current = { ...current, ...input, version: current.version + 1 };
+        return { accountVersion: current.version };
+      }),
+    });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: new RegExp(label) }));
+    if (!scheduled) fireEvent.click(await screen.findByRole("button", { name: "Cliente y programación" }));
+    await screen.findByRole("option", { name: "Ana López · 3331234567" });
+    fireEvent.change(screen.getByLabelText("Cliente frecuente"), { target: { value: customer.id } });
+    expect(screen.getByLabelText("Nombre del cliente (opcional)")).toHaveValue("Ana López");
+    if (scheduled) fireEvent.change(screen.getByLabelText("Fecha y hora de envío a cocina"), { target: { value: date } });
+    fireEvent.click(screen.getByRole("button", { name: "Guardar datos" }));
+    await waitFor(() => expect(api.updateAccountDetails).toHaveBeenCalledWith("account-1", {
+      expectedVersion: 0, customerId: customer.id, customerName: customer.name,
+      ...(scheduled ? { scheduledFor: new Date(date).toISOString() } : {}),
+    }));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Cliente y programación" })).not.toBeInTheDocument());
+    expect(screen.getByText("Ana López", { selector: ".order-details-summary strong" })).toBeInTheDocument();
+    expect(api.checkoutAccount).not.toHaveBeenCalled();
+  });
+
+  it("borra los importes y paneles del administrador al cambiar a cajero", async () => {
+    storeTerminal();
+    const cashier = { ...session, user: { ...session.user, displayName: "Cajero", permissions: ["cash.shift.read", "cash.shift.close", "sales.payment.capture"] } };
+    const api = createApi({ login: vi.fn().mockResolvedValueOnce(session).mockResolvedValueOnce(cashier) });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Caja y corte" }));
+    await screen.findByText("Efectivo teórico");
+    fireEvent.click(screen.getByRole("button", { name: "Cerrar sesión de Administrador" }));
+    fireEvent.change(await screen.findByLabelText("PIN"), { target: { value: "3456" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    await screen.findByRole("button", { name: "Cerrar sesión de Cajero" });
+    expect(screen.queryByRole("dialog", { name: "Caja y corte" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Efectivo teórico")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Caja y corte" }));
+    await screen.findByRole("heading", { name: "Declaración y cierre" });
+    expect(api.currentCashReport).toHaveBeenCalledTimes(1);
+    expect(api.recentReceipts).toHaveBeenCalledTimes(1);
+    expect(screen.getByLabelText("Declarado Efectivo")).toHaveValue(null);
+    expect(screen.queryByText("Efectivo teórico")).not.toBeInTheDocument();
+  });
+
+  it("muestra al administrador quién declaró y si coincide con el dinero registrado", async () => {
+    storeTerminal();
+    const admin = { ...session, user: { ...session.user, permissions: [...session.user.permissions, "cash.shift.reconcile"] } };
+    const api = createApi({ login: vi.fn().mockResolvedValue(admin), cashShiftCloses: vi.fn().mockResolvedValue([{
+      id: "close-1", status: "closed", closedAt: "2030-01-01T13:00:00Z", report: cashReport,
+      closedBy: { id: "cashier-1", displayName: "Cajero de turno" }, declarations: [{
+        method: paymentMethods[0], theoreticalInCents: 54620, declaredInCents: 54000, differenceInCents: -620,
+      }],
+    }]) });
+    render(<RemotePosApp api={api} />);
+    fireEvent.change(screen.getByLabelText("PIN"), { target: { value: "1234" } });
+    fireEvent.click(screen.getByRole("button", { name: "Ingresar" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Caja y corte" }));
+    await screen.findByRole("region", { name: "Conciliación de cortes" });
+    expect(screen.getByText("Cajero: Cajero de turno")).toBeInTheDocument();
+    expect(screen.getByText("Registrado: $546.20")).toBeInTheDocument();
+    expect(screen.getByText("Declarado: $540.00")).toBeInTheDocument();
+    expect(screen.getByText("Diferencia: -$6.20")).toBeInTheDocument();
+  });
+
 });

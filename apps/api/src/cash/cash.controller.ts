@@ -41,6 +41,12 @@ export class CashController {
     return this.cash.currentReport(request.auth);
   }
 
+  @Get("shifts/closes")
+  @RequirePermissions("cash.shift.reconcile")
+  closedShifts(@Req() request: RequestWithAuth) {
+    return this.cash.closedShifts(request.auth);
+  }
+
   @Post("shifts")
   @ApiHeader({ name: "idempotency-key", required: true })
   @RequirePermissions("cash.shift.open")

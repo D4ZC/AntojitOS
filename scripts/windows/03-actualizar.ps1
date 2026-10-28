@@ -328,6 +328,9 @@ try {
     }
     Invoke-AntojitPilot -Root $installation.Root -Command 'verify-backup' -Arguments @($backupPath)
     $pending.VerifiedBackups = @($pending.VerifiedBackups) + @($backupPath)
+    if (Select-String -LiteralPath (Join-Path $installation.Root 'scripts/pilot.mjs') -Pattern 'ensurePilotCashierPin' -SimpleMatch -Quiet) {
+        Invoke-AntojitPilot -Root $installation.Root -Command 'configure-cashier'
+    }
     $pending.Stage = 'deploying'
     $pending.MayHaveMigrated = $true
     Save-UpdatePending -Record $pending -Path $pendingPath

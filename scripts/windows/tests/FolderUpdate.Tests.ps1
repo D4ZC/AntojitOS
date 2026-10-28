@@ -36,7 +36,7 @@ BeforeAll {
             'apps/print-agent/src/main.ts' = 'export const printer = true;'
             'packages/domain/package.json' = '{"name":"@antojit-os/domain"}'
             'packages/domain/src/index.ts' = 'export const domain = true;'
-            'scripts/pilot.mjs' = '// fixture pilot'
+            'scripts/pilot.mjs' = '// fixture pilot ensurePilotCashierPin'
             'scripts/check-npm-registry.mjs' = '// fixture npm connectivity check'
             'scripts/windows/01-instalar.ps1' = '# fixture installer'
             'scripts/windows/02-iniciar.ps1' = '# fixture start'
@@ -200,6 +200,7 @@ Describe 'Folder update maintenance and recovery' {
             }
             Failure = ''
             ApiStarted = $false
+            CashierConfigured = $false
             Lease = (New-Object IO.MemoryStream)
         }
         $fixture = $global:AntojitFolderFixture
@@ -249,6 +250,7 @@ Describe 'Folder update maintenance and recovery' {
         } -ModuleName AntojitOS.Update
         Mock Invoke-AntojitPilot {
             param($Root, $Command)
+            if ($Command -eq 'configure-cashier') { $global:AntojitFolderFixture.CashierConfigured = $true }
             if ($Command -eq 'verify' -and $global:AntojitFolderFixture.Failure -eq 'verify') {
                 throw 'Fixture deployed API verification failed.'
             }
@@ -264,6 +266,13 @@ Describe 'Folder update maintenance and recovery' {
 
     It 'deploys verified source and records folder mode without using Git or reseeding' {
         $fixture = $global:AntojitFolderFixture
+        Mock Invoke-AntojitCompose {
+            param($Installation, $Arguments)
+            if ($Arguments[0] -eq 'up' -and $Arguments -contains 'api') {
+                if (-not $global:AntojitFolderFixture.CashierConfigured) { throw 'Cashier must be configured before the API starts.' }
+                $global:AntojitFolderFixture.ApiStarted = $true
+            }
+        } -ModuleName AntojitOS.Update
         Invoke-AntojitFolderUpdate -SourcePath $fixture.Source -InstallPath $fixture.Installation.Root -ConfirmMaintenance
 
         Get-Content -LiteralPath (Join-Path $fixture.Installation.Root 'apps/api/src/main.ts') -Raw | Should -Be 'export const version = 2;'
@@ -274,6 +283,7 @@ Describe 'Folder update maintenance and recovery' {
         $fixture.ApiStarted | Should -BeTrue
         $fixture.Lease.CanWrite | Should -BeFalse
         Should -Invoke Invoke-AntojitCandidateBuild -ModuleName AntojitOS.Update -Times 1 -Exactly
+        Should -Invoke Invoke-AntojitPilot -ModuleName AntojitOS.Update -Times 1 -Exactly -ParameterFilter { $Command -eq 'configure-cashier' }
         Should -Invoke New-AntojitDatabaseUpdateBackup -ModuleName AntojitOS.Update -Times 1 -Exactly
         Should -Invoke Get-AntojitGit -ModuleName AntojitOS.Update -Times 0 -Exactly
         Should -Invoke Invoke-AntojitPilot -ModuleName AntojitOS.Update -Times 0 -Exactly -ParameterFilter { $Command -in @('seed', 'ensure-seeded') }

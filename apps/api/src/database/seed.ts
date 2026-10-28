@@ -4,6 +4,7 @@ import { loadEnvironment } from "../config/load-environment.js";
 import { applyPilotCatalog } from "./pilot-catalog.js";
 import { PostgresDatabase } from "./postgres-database.js";
 import { runMigrations } from "./run-migrations.js";
+import { provisionCashierAccounts } from "./provision-cashier.js";
 
 const ids = {
   site: "00000000-0000-4000-8000-000000000001",
@@ -103,7 +104,7 @@ try {
           'catalog.read', 'service.account.open', 'service.account.read',
           'service.item.add', 'service.item.edit', 'service.item.cancel',
           'service.round.send', 'service.account.manage',
-          'service.precheck.create', 'delivery.manage'
+          'service.precheck.create', 'delivery.manage', 'customers.read', 'customers.manage'
         )
        ON CONFLICT DO NOTHING`,
       [ids.waiterRole],
@@ -177,7 +178,8 @@ try {
     });
   });
 
-  console.info("Datos piloto creados. Usuarios: ADMIN y MESERO");
+  await provisionCashierAccounts(database, { resetPin: true });
+  console.info("Datos piloto creados. Usuarios: ADMIN, MESERO y CAJERO");
 } finally {
   await database.close();
 }

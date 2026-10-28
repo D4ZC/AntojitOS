@@ -23,6 +23,8 @@ const category = {
   paquetes: id(709),
   postres: id(710),
   bebidas: id(711),
+  chamorros: id(712),
+  extras: id(713),
 };
 
 const product = (
@@ -66,6 +68,8 @@ export const pilotCatalog = {
     { id: category.paquetes, code: "PAQUETES", name: "Paquetes", color: "coral", displayOrder: 10, seasonal: false },
     { id: category.postres, code: "POSTRES", name: "Postres", color: "peach", displayOrder: 11, seasonal: false },
     { id: category.bebidas, code: "BEBIDAS", name: "Bebidas", color: "sage", displayOrder: 12, seasonal: false },
+    { id: category.chamorros, code: "CHAMORROS", name: "Chamorros", color: "clay", displayOrder: 13, seasonal: false },
+    { id: category.extras, code: "EXTRAS", name: "Extras", color: "cream", displayOrder: 14, seasonal: false },
   ],
   products: [
     product(720, category.pozole, "POZOLE-CHICO", "Pozole chico", "Chico", "🍲", "honey", 1, 8000),
@@ -74,7 +78,7 @@ export const pilotCatalog = {
     product(723, category.pozole, "POZOLE-LLEVAR-MEDIO-LITRO", "Pozole para llevar medio litro", "Medio litro", "🥡", "cream", 4, 8000),
     product(724, category.pozole, "POZOLE-LLEVAR-LITRO", "Pozole para llevar un litro", "Litro", "🥡", "honey", 5, 10000),
     product(736, category.pozole, "POZOLE-BOTE", "Pozole para llevar en bote", "Bote", "🪣", "sun", 6, 15000),
-    product(725, category.pozole, "TOSTADA-EXTRA", "Tostada extra", "Tostada extra", "🫓", "cream", 7, 300),
+    product(725, category.extras, "TOSTADA-EXTRA", "Pieza tostada", "Pieza tostada", "🫓", "cream", 1, 300),
     product(737, category.pozole, "CALDO-EXTRA-MEDIO-LITRO", "Caldo extra medio litro", "Caldo ½ litro", "🥣", "peach", 8, 2000),
     product(738, category.pozole, "CALDO-EXTRA-LITRO", "Caldo extra un litro", "Caldo litro", "🥣", "clay", 9, 3000),
     product(726, category.tacosDorados, "TACO-DORADO-ENROLLADO", "Taco dorado enrollado", "Enrollado", "🌮", "amber", 1, 1000),
@@ -120,6 +124,13 @@ export const pilotCatalog = {
     product(769, category.bebidas, "AGUA-MINERAL-GRANDE", "Agua mineral grande", "Mineral grande", "💧", "sage", 6, 4500),
     product(770, category.bebidas, "JUGO", "Jugo", "Jugo", "🧃", "peach", 7, 3500),
     product(771, category.bebidas, "CERVEZA", "Cerveza", "Cerveza", "🍺", "honey", 8, 4000),
+    product(772, category.bebidas, "AGUA-FRESCA-MEDIO-LITRO", "Agua fresca 1/2 litro", "Agua ½ litro", "🥤", "sage", 9, 2500),
+    product(773, category.extras, "PATA-EXTRA", "Pata", "Pata", "🍖", "clay", 2, 2000),
+    product(774, category.extras, "FRIJOLES-ADOBADOS", "Frijoles Adobados", "Frijoles Adobados", "🥣", "honey", 3, 3000),
+    product(775, category.extras, "ARROZ-PORCION", "Arroz porción", "Arroz porción", "🍚", "sun", 4, 3000),
+    product(776, category.extras, "TORTILLAS-EXTRA", "Tortillas", "Tortillas", "🫓", "cream", 5, 500),
+    product(777, category.chamorros, "CHAMORRO-MEDIO", "1/2 chamorro", "½ chamorro", "🍖", "clay", 1, 10000),
+    product(778, category.chamorros, "CHAMORRO-COMPLETO", "1 Chamorro completo", "Completo", "🍖", "amber", 2, 17000),
   ],
   modifierGroups: [
     {
@@ -183,11 +194,21 @@ export const pilotCatalog = {
     },
     {
       id: id(903), code: "RELLENO-ENCHILADA", name: "Preparación", minimumSelections: 1, maximumSelections: 1,
-      productIds: [id(729), id(730)],
+      productIds: [id(729)],
       options: [
         option(923, "ENCHILADA-QUESO", "Queso"),
         option(924, "ENCHILADA-QUESO-CEBOLLA", "Queso con cebolla"),
         option(925, "ENCHILADA-CARNE", "Carne"),
+        option(1188, "ENCHILADA-COMBINADA", "Combinadas (2 carne, 2 queso)"),
+      ],
+    },
+    {
+      id: id(1015), code: "RELLENO-ENCHILADA-PIEZA", name: "Preparación", minimumSelections: 1, maximumSelections: 1,
+      productIds: [id(730)],
+      options: [
+        option(1185, "ENCHILADA-PIEZA-QUESO", "Queso"),
+        option(1186, "ENCHILADA-PIEZA-QUESO-CEBOLLA", "Queso con cebolla"),
+        option(1187, "ENCHILADA-PIEZA-CARNE", "Carne"),
       ],
     },
     {
@@ -289,7 +310,7 @@ export const pilotCatalog = {
     },
     {
       id: id(1010), code: "SABOR-AGUA-FRESCA", name: "Sabor del agua", minimumSelections: 1, maximumSelections: 1,
-      productIds: [id(764), id(757)],
+      productIds: [id(764), id(772), id(757)],
       options: [
         option(1152, "AGUA-MANGO", "Mango"),
         option(1153, "AGUA-CIRUELA", "Ciruela"),

@@ -40,6 +40,11 @@ export class OpenAccountDto {
   @MaxLength(80)
   customerName?: string | null;
 
+  @ApiPropertyOptional({ format: "uuid", nullable: true })
+  @IsOptional()
+  @IsUUID()
+  customerId?: string | null;
+
   @ApiPropertyOptional({ format: "date-time", nullable: true })
   @IsOptional()
   @IsDateString({ strict: true })

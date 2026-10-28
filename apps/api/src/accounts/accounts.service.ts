@@ -47,6 +47,9 @@ interface AccountRow extends DatabaseRow {
   status: string;
   reference: string | null;
   customer_name: string | null;
+  customer_id: string | null;
+  customer_phone: string | null;
+  customer_address: string | null;
   scheduled_for: Date | string | null;
   schedule_dispatched_at: Date | string | null;
   schedule_last_error: string | null;
@@ -176,7 +179,12 @@ export class AccountsService {
   ) {}
 
   async get(accountId: string, actor: AuthContext) {
-    return this.readAccount(this.database, accountId, actor.siteId);
+    const account = await this.readAccount(this.database, accountId, actor.siteId);
+    if (["closed", "cancelled"].includes(account.status) &&
+        !actor.permissions.includes("sales.receipt.read") && !actor.permissions.includes("delivery.manage")) {
+      throw new ForbiddenException("No tienes permiso para consultar cuentas cerradas");
+    }
+    return account;
   }
 
   async readAccount(
@@ -188,7 +196,8 @@ export class AccountsService {
       `SELECT
          accounts.id, accounts.site_id, accounts.table_id, tables.name AS table_name,
          accounts.service_type, accounts.status, accounts.reference,
-         accounts.customer_name, accounts.scheduled_for, accounts.schedule_dispatched_at,
+         accounts.customer_name, accounts.customer_id, accounts.customer_phone, accounts.customer_address,
+         accounts.scheduled_for, accounts.schedule_dispatched_at,
          accounts.schedule_last_error,
          accounts.guest_count, accounts.version, accounts.opened_at,
          accounts.responsible_user_id, users.display_name AS responsible_user_name,
@@ -297,6 +306,9 @@ export class AccountsService {
       status: account.status,
       reference: account.reference,
       customerName: account.customer_name,
+      customerId: account.customer_id,
+      customerPhone: account.customer_phone,
+      customerAddress: account.customer_address,
       scheduledFor: optionalDate(account.scheduled_for),
       scheduleDispatchedAt: optionalDate(account.schedule_dispatched_at),
       scheduleError: account.schedule_last_error,
@@ -343,7 +355,8 @@ export class AccountsService {
       },
       async (transaction) => {
         const scheduledFor = scheduledDate(input.scheduledFor);
-        const name = customerName(input.customerName);
+        const customer = await this.customerSnapshot(transaction, actor.siteId, input);
+        const name = customer.name;
         if (input.serviceType === "table") {
           if (!input.tableId) {
             throw new BadRequestException("Se requiere mesa para este servicio");
@@ -377,10 +390,12 @@ export class AccountsService {
               id, site_id, table_id, service_type, reference, guest_count,
               opened_by_user_id, opened_on_terminal_id, responsible_user_id,
               account_group_id, customer_name, scheduled_for,
-              scheduled_by_user_id, scheduled_on_terminal_id
+              scheduled_by_user_id, scheduled_on_terminal_id,
+              customer_id, customer_phone, customer_address
             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $7, $1, $9, $10,
                 CASE WHEN $10::timestamptz IS NULL THEN NULL ELSE $7::uuid END,
-                CASE WHEN $10::timestamptz IS NULL THEN NULL ELSE $8::uuid END)`,
+                CASE WHEN $10::timestamptz IS NULL THEN NULL ELSE $8::uuid END,
+                $11, $12, $13)`,
             [
               id,
               actor.siteId,
@@ -392,6 +407,9 @@ export class AccountsService {
               actor.terminalId,
               name,
               scheduledFor,
+              customer.id,
+              customer.phone,
+              customer.address,
             ],
           );
         } catch (error) {
@@ -407,6 +425,9 @@ export class AccountsService {
           serviceType: input.serviceType,
           reference: input.reference ?? null,
           customerName: name,
+          customerId: customer.id,
+          customerPhone: customer.phone,
+          customerAddress: customer.address,
           scheduledFor,
           scheduleDispatchedAt: null,
           scheduleError: null,
@@ -948,6 +969,9 @@ export class AccountsService {
         totalInCents: account.totalInCents,
         isPrimary: account.isPrimary,
         customerName: account.customerName,
+        customerId: account.customerId,
+        customerPhone: account.customerPhone,
+        customerAddress: account.customerAddress,
         scheduledFor: account.scheduledFor,
         scheduleDispatchedAt: account.scheduleDispatchedAt,
         scheduleError: account.scheduleError,
@@ -990,6 +1014,9 @@ export class AccountsService {
         totalInCents: account.totalInCents,
         openedAt: new Date(row.opened_at).toISOString(),
         customerName: account.customerName,
+        customerId: account.customerId,
+        customerPhone: account.customerPhone,
+        customerAddress: account.customerAddress,
         scheduledFor: account.scheduledFor,
         scheduleDispatchedAt: account.scheduleDispatchedAt,
         scheduleError: account.scheduleError,
@@ -1266,11 +1293,11 @@ export class AccountsService {
           throw new ForbiddenException("Los datos del pedido no permiten cambiar mesa ni responsable");
         }
         if (!input.tableId && !input.responsibleUserId &&
-            input.customerName === undefined && input.scheduledFor === undefined) {
+            input.customerName === undefined && input.customerId === undefined && input.scheduledFor === undefined) {
           throw new BadRequestException("Indica los datos del pedido que deseas actualizar");
         }
-        const name = input.customerName === undefined
-          ? account.customer_name : customerName(input.customerName);
+        const customer = await this.customerSnapshot(transaction, actor.siteId, input, account);
+        const name = customer.name;
         const scheduledFor = input.scheduledFor === undefined
           ? optionalDate(account.scheduled_for) : scheduledDate(input.scheduledFor);
         if (input.responsibleUserId) {
@@ -1288,10 +1315,12 @@ export class AccountsService {
                   schedule_retry_after = CASE WHEN $5 THEN NULL ELSE schedule_retry_after END,
                   schedule_last_error = CASE WHEN $5 THEN NULL ELSE schedule_last_error END,
                   scheduled_by_user_id = CASE WHEN $5 THEN $6 ELSE scheduled_by_user_id END,
-                  scheduled_on_terminal_id = CASE WHEN $5 THEN $7 ELSE scheduled_on_terminal_id END
+                  scheduled_on_terminal_id = CASE WHEN $5 THEN $7 ELSE scheduled_on_terminal_id END,
+                  customer_id = $8, customer_phone = $9, customer_address = $10
             WHERE id = $1 AND site_id = $2`,
           [accountId, actor.siteId, name, scheduledFor, input.scheduledFor !== undefined,
-            scheduledFor ? actor.userId : null, scheduledFor ? actor.terminalId : null],
+            scheduledFor ? actor.userId : null, scheduledFor ? actor.terminalId : null,
+            customer.id, customer.phone, customer.address],
         );
         if (input.tableId && input.tableId !== account.table_id) {
           if (account.service_type !== "table") {
@@ -1340,6 +1369,9 @@ export class AccountsService {
           tableId: input.tableId ?? account.table_id,
           responsibleUserId: input.responsibleUserId ?? account.responsible_user_id,
           customerName: name,
+          customerId: customer.id,
+          customerPhone: customer.phone,
+          customerAddress: customer.address,
           scheduledFor,
           scheduleDispatchedAt: input.scheduledFor === undefined
             ? optionalDate(account.schedule_dispatched_at) : null,
@@ -1383,8 +1415,8 @@ export class AccountsService {
           `INSERT INTO service_accounts (
             id, site_id, table_id, service_type, reference, guest_count,
             opened_by_user_id, opened_on_terminal_id, responsible_user_id,
-            account_group_id, is_primary
-          ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, false)`,
+            account_group_id, is_primary, customer_id, customer_name, customer_phone, customer_address
+          ) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9, false, $10, $11, $12, $13)`,
           [
             destinationAccountId,
             actor.siteId,
@@ -1395,6 +1427,10 @@ export class AccountsService {
             actor.terminalId,
             source.responsible_user_id,
             source.account_group_id,
+            source.customer_id,
+            source.customer_name,
+            source.customer_phone,
+            source.customer_address,
           ],
         );
         await this.moveItems(transaction, {
@@ -1897,6 +1933,35 @@ export class AccountsService {
     }
   }
 
+  private async customerSnapshot(
+    transaction: DatabaseSession,
+    siteId: string,
+    input: { customerId?: string | null; customerName?: string | null },
+    previous?: AccountRow,
+  ): Promise<{ id: string | null; name: string | null; phone: string | null; address: string | null }> {
+    if (previous && input.customerId === previous.customer_id && input.customerId &&
+        (input.customerName === undefined || customerName(input.customerName) === previous.customer_name)) {
+      return { id: previous.customer_id, name: previous.customer_name,
+        phone: previous.customer_phone, address: previous.customer_address };
+    }
+    if (input.customerId) {
+      const customer = (await transaction.query<{
+        id: string; name: string; phone: string | null; address: string | null; active: boolean;
+      }>(
+        "SELECT id, name, phone, address, active FROM frequent_customers WHERE id = $1 AND site_id = $2 FOR SHARE",
+        [input.customerId, siteId],
+      )).rows[0];
+      if (!customer) throw new NotFoundException("No existe el cliente en esta sucursal");
+      if (!customer.active) throw new ConflictException("El cliente está inactivo");
+      return { id: customer.id, name: customer.name, phone: customer.phone, address: customer.address };
+    }
+    const name = input.customerName === undefined ? previous?.customer_name ?? null : customerName(input.customerName);
+    if (previous && input.customerId === undefined && name === previous.customer_name) {
+      return { id: previous.customer_id, name, phone: previous.customer_phone, address: previous.customer_address };
+    }
+    return { id: null, name, phone: null, address: null };
+  }
+
   private async lockAccount(
     transaction: DatabaseSession,
     accountId: string,
@@ -1907,7 +1972,8 @@ export class AccountsService {
       `SELECT
          id, site_id, table_id, NULL::text AS table_name, service_type,
          status, reference, guest_count, version, opened_at,
-         customer_name, scheduled_for, schedule_dispatched_at, schedule_last_error,
+         customer_name, customer_id, customer_phone, customer_address,
+         scheduled_for, schedule_dispatched_at, schedule_last_error,
          scheduled_by_user_id, scheduled_on_terminal_id,
          opened_by_user_id, opened_on_terminal_id,
          responsible_user_id, NULL::text AS responsible_user_name,

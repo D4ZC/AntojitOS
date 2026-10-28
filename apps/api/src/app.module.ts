@@ -1,6 +1,7 @@
 import { Module } from "@nestjs/common";
 import { AccountingModule } from "./accounting/accounting.module.js";
 import { DeliveryModule } from "./delivery/delivery.module.js";
+import { CustomersModule } from "./customers/customers.module.js";
 import { APP_GUARD } from "@nestjs/core";
 import { ScheduleModule } from "@nestjs/schedule";
 import { AccountsModule } from "./accounts/accounts.module.js";
@@ -30,6 +31,7 @@ import { TerminalsModule } from "./terminals/terminals.module.js";
     SalesModule,
     AccountingModule,
     DeliveryModule,
+    CustomersModule,
     EventsModule,
     HealthModule,
     TerminalsModule,

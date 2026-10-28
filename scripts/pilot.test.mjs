@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   backupFileName,
   ensurePilotIsSeeded,
+  ensurePilotCashierPin,
   generatePilotEnvironment,
   normalizeCommandArguments,
   parseEnvironmentFile,
@@ -11,6 +15,36 @@ import {
   usesNativePrintAgent,
   validatePilotEnvironment,
 } from "./pilot.mjs";
+
+test("agrega un PIN de cajero a configuraciones anteriores y conserva bytes, permisos y secretos existentes", () => {
+  const directory = mkdtempSync(join(tmpdir(), "antojit-cashier-env-"));
+  const path = join(directory, ".env.pilot");
+  try {
+    const original = '# Configuración privada\r\nSEED_ADMIN_PIN="184273"\r\nSEED_WAITER_PIN=285174\r\nSESSION_PEPPER=keep-this-exactly';
+    writeFileSync(path, original, { mode: 0o600 });
+    const mode = statSync(path).mode;
+    const upgraded = ensurePilotCashierPin(path);
+    const contents = readFileSync(path, "utf8");
+    assert.match(upgraded.SEED_CASHIER_PIN, /^\d{6}$/u);
+    assert.notEqual(upgraded.SEED_CASHIER_PIN, upgraded.SEED_ADMIN_PIN);
+    assert.notEqual(upgraded.SEED_CASHIER_PIN, upgraded.SEED_WAITER_PIN);
+    assert.ok(contents.startsWith(original + '\r\nSEED_CASHIER_PIN='));
+    assert.equal(statSync(path).mode, mode);
+    assert.deepEqual(ensurePilotCashierPin(path), upgraded);
+    assert.equal(readFileSync(path, "utf8"), contents);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
+
+test("conserva exactamente un PIN de cajero ya configurado", () => {
+  const directory = mkdtempSync(join(tmpdir(), "antojit-cashier-existing-"));
+  const path = join(directory, ".env.pilot");
+  try {
+    const original = 'SEED_ADMIN_PIN=192837\nexport SEED_CASHIER_PIN="564738"\n# conservar\n';
+    writeFileSync(path, original, { mode: 0o600 });
+    assert.equal(ensurePilotCashierPin(path).SEED_CASHIER_PIN, "564738");
+    assert.equal(readFileSync(path, "utf8"), original);
+  } finally { rmSync(directory, { recursive: true, force: true }); }
+});
 
 test("parsea variables de entorno sin incluir comentarios", () => {
   assert.deepEqual(
@@ -126,12 +160,16 @@ BOOTSTRAP_TOKEN=__BOOTSTRAP_TOKEN__
 SESSION_PEPPER=__SESSION_PEPPER__
 SEED_ADMIN_PIN=__ADMIN_PIN__
 SEED_WAITER_PIN=__WAITER_PIN__
+SEED_CASHIER_PIN=__CASHIER_PIN__
 PILOT_HTTP_PORT=8080
 `);
   const environment = parseEnvironmentFile(generated.contents);
 
   assert.doesNotThrow(() => validatePilotEnvironment(environment));
   assert.notEqual(generated.adminPin, generated.waiterPin);
+  assert.notEqual(generated.cashierPin, generated.adminPin);
+  assert.notEqual(generated.cashierPin, generated.waiterPin);
+  assert.equal(environment.SEED_CASHIER_PIN, generated.cashierPin);
   assert.equal(generated.bootstrapToken.length, 48);
 });
 

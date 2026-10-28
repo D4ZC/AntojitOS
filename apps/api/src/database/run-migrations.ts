@@ -2,6 +2,7 @@ import { readdir, readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { DatabasePort } from "./database.port.js";
+import { provisionCashierAccounts } from "./provision-cashier.js";
 
 const migrationDirectory = resolve(
   fileURLToPath(new URL("../../migrations", import.meta.url)),
@@ -37,4 +38,5 @@ export const runMigrations = async (database: DatabasePort): Promise<void> => {
       );
     });
   }
+  await provisionCashierAccounts(database);
 };

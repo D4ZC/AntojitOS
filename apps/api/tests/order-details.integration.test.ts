@@ -17,7 +17,7 @@ const operator: AuthContext = {
   userId: fixtureIds.user,
   terminalId: fixtureIds.terminalOne,
   displayName: "Operador",
-  permissions: ["service.account.open", "service.item.edit", "service.round.send"],
+  permissions: ["service.account.open", "service.item.edit", "service.round.send", "cash.shift.preview"],
 };
 const manager = { ...operator, permissions: [...operator.permissions, "service.account.manage"] };
 const future = () => new Date(Date.now() + 86_400_000).toISOString();
@@ -104,7 +104,8 @@ describe("datos del pedido, notas enviadas y programación durable", () => {
     expect(cancelled.body.cancelledItemIds).toEqual([item.body.item.id]);
     expect(replay.replayed).toBe(true);
     expect((await accounts.listOpenCounter(operator)).accounts).toHaveLength(0);
-    const account = await accounts.get(opened.body.id, operator);
+    await expect(accounts.get(opened.body.id, operator)).rejects.toBeInstanceOf(ForbiddenException);
+    const account = await accounts.get(opened.body.id, { ...operator, permissions: ["sales.receipt.read"] });
     expect(account).toMatchObject({ status: "cancelled", version: 2, totalInCents: 0 });
     expect(account.items[0]?.preparationState).toBe("cancelled");
     const audit = await database.query<{ changes: { cancelledItemIds: string[] }; reason: string }>(

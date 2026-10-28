@@ -1,4 +1,4 @@
-import type { PrintPayload, ProductionPayload, ReceiptPayload, ShiftClosePayload } from "./types.js";
+import type { PrintPayload, PrecheckPayload, ProductionPayload, ReceiptPayload, ShiftClosePayload, BlindShiftClosePayload } from "./types.js";
 
 const ESC = 0x1b;
 const GS = 0x1d;
@@ -64,12 +64,20 @@ const layout = (columns: number) => ({
   },
 });
 
+const businessHeading = (page: ReturnType<typeof layout>): string[] => [
+  ...page.center("Antojitos Mexicanos Frank"),
+  ...page.center("Carretera al Salto #6"),
+  ...page.center("San Jose del Castillo"),
+  ...page.center("Tel: 3330147392"),
+];
+
 const renderProduction = (payload: ProductionPayload, columns: number): string[] => {
   const page = layout(columns);
   const title = payload.kind === "reprint" ? "*** REIMPRESION ***"
     : payload.kind === "cancellation" ? "*** CANCELACION ***"
       : payload.kind === "note_update" ? "*** ACTUALIZACION DE NOTA ***" : "*** NUEVA COMANDA ***";
   const lines = [
+    ...businessHeading(page),
     ...page.center(title),
     ...(payload.kind === "reprint" && payload.cancellationReason ? page.center("*** CANCELACION ***") : []),
     ...(payload.kind === "note_update" ? page.center("NO PREPARAR DE NUEVO") : []),
@@ -95,7 +103,7 @@ const renderReceipt = (payload: ReceiptPayload, columns: number): string[] => {
   const label = receipt.account.tableName || receipt.account.reference
     || (receipt.account.serviceType === "takeaway" ? "Para llevar" : "Venta rápida");
   const lines = [
-    ...page.center("ANTOJITOS"),
+    ...businessHeading(page),
     ...(payload.kind === "receipt_reprint" ? page.center("*** REIMPRESION DE TICKET ***") : []),
     ...(payload.receiptStatus === "cancelled" ? page.center("*** TICKET CANCELADO ***") : []),
     ...(payload.receiptStatus === "refunded" ? page.center("*** TICKET REEMBOLSADO ***") : []),
@@ -132,10 +140,41 @@ const renderReceipt = (payload: ReceiptPayload, columns: number): string[] => {
   return lines;
 };
 
-const renderShiftClose = (payload: ShiftClosePayload, columns: number): string[] => {
+const renderPrecheck = (payload: PrecheckPayload, columns: number): string[] => {
+  const { precheck } = payload;
+  const { account } = precheck;
+  const page = layout(columns);
+  const label = account.tableName || account.reference || (account.serviceType === "takeaway" ? "Para llevar" : "Venta rápida");
+  const lines = [...businessHeading(page), ...page.center(`PRECUENTA #${precheck.sequence}`),
+    ...page.center(label), ...page.center(date(precheck.generatedAt)),
+    ...(account.customerName ? page.text(`Cliente: ${account.customerName}`) : []), page.rule];
+  for (const item of account.items) {
+    if (item.preparationState === "cancelled") continue;
+    lines.push(...page.pair(`${item.quantity} x ${item.productName}`, money(item.lineTotalInCents)));
+    for (const modifier of item.modifiers ?? []) lines.push(...page.text(`> ${modifier.name}${modifier.quantity > 1 ? ` x${modifier.quantity}` : ""}`, 2));
+    if (item.note) lines.push(...page.text(`NOTA: ${item.note}`, 2));
+  }
+  lines.push(page.rule);
+  if (account.totals.discountInCents > 0) lines.push(...page.pair("Descuento aplicado", money(account.totals.discountInCents)));
+  lines.push(...page.pair("Subtotal sin impuestos", money(account.totals.subtotalInCents)),
+    ...page.pair("Impuestos", money(account.totals.taxInCents)),
+    ...page.pair("TOTAL A PAGAR", money(account.totalInCents)), "",
+    ...page.center("CUENTA PENDIENTE DE PAGO"), ...page.center("Gracias por su visita"));
+  return lines;
+};
+
+const renderShiftClose = (payload: ShiftClosePayload | BlindShiftClosePayload, columns: number): string[] => {
   const { close } = payload;
   const page = layout(columns);
-  const lines = [...page.center("*** CORTE DE CAJA ***"), ...page.center(close.report.register.name.toUpperCase()),
+  if (close.blind) {
+    const lines = [...businessHeading(page), ...page.center("*** DECLARACION DE CAJA ***"),
+      ...page.center(close.register.name), ...page.text(`Apertura: ${date(close.shift.openedAt)}`),
+      ...page.text(`Cierre: ${date(close.closedAt)}`), page.rule];
+    for (const declaration of close.declarations) lines.push(...page.pair(`${declaration.method.name} declarado:`, money(declaration.declaredInCents)));
+    lines.push(page.rule, ...page.text("Conciliacion reservada al administrador"), ...page.text(`Corte: ${close.id}`));
+    return lines;
+  }
+  const lines = [...businessHeading(page), ...page.center("*** CORTE DE CAJA ***"), ...page.center(close.report.register.name.toUpperCase()),
     ...page.text(`Apertura: ${date(close.report.shift.openedAt)}`), ...page.text(`Cierre: ${date(close.closedAt)}`), page.rule,
     ...page.text(`Tickets: ${close.report.sales.receiptCount}`), ...page.text(`Cancelaciones/devoluciones: ${close.report.sales.refundCount}`),
     ...page.pair("Venta bruta:", money(close.report.sales.grossSaleInCents)),
@@ -153,7 +192,7 @@ const renderShiftClose = (payload: ShiftClosePayload, columns: number): string[]
 
 export const renderPlainTicket = (payload: PrintPayload, options: TicketOptions = {}): string => {
   const columns = columnsFor(options);
-  const lines = "receipt" in payload ? renderReceipt(payload, columns)
+  const lines = "precheck" in payload ? renderPrecheck(payload, columns) : "receipt" in payload ? renderReceipt(payload, columns)
     : "close" in payload ? renderShiftClose(payload, columns) : renderProduction(payload, columns);
   return `${lines.join("\n")}\n\n\n`;
 };
@@ -167,7 +206,7 @@ export const renderEscPos = (payload: PrintPayload, options: TicketOptions = {})
   const bytes: number[] = [ESC, 0x40, ESC, 0x21, 0x00, ESC, 0x4d, font, ESC, 0x74, codePage,
     GS, 0x21, 0x00, ESC, 0x61, 0x00, ESC, 0x32, ESC, 0x45, 0x00];
   for (const line of content.split("\n")) {
-    const bold = /^(TOTAL\b|ANTOJITOS$|\*\*\*)/.test(line.trim());
+    const bold = /^(TOTAL\b|Antojitos Mexicanos Frank$|\*\*\*)/.test(line.trim());
     if (bold) bytes.push(ESC, 0x45, 0x01);
     bytes.push(...encodeCp858(line), 0x0a);
     if (bold) bytes.push(ESC, 0x45, 0x00);

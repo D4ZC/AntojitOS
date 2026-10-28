@@ -9,11 +9,11 @@ function ConvertTo-AntojitLogText {
     $safe = [regex]::Replace($safe, '(?i)(\bAuthorization\s*:\s*(?:Bearer|Basic)\s+)\S+', '$1[REDACTED]')
     $secretName = '(?:[A-Z0-9_]*(?:PASSWORD|PASSWD|TOKEN|PEPPER|SECRET|API_KEY|PRIVATE_KEY)[A-Z0-9_]*|(?:[A-Z0-9_]+_)?PIN)'
     $safe = [regex]::Replace($safe, ('(?im)(\b' + $secretName + '\s*[=:]\s*)(?:"[^"\r\n]*"|''[^''\r\n]*''|[^\s\r\n,;]+)'), '$1[REDACTED]')
-    $secretKey = '(?:[^"\r\n]*(?:password|passwd|token|pepper|secret|api[_-]?key|private[_-]?key)[^"\r\n]*|(?:[a-z0-9_-]+[_-])?pin|(?:admin|waiter|mesero)Pin)'
+    $secretKey = '(?:[^"\r\n]*(?:password|passwd|token|pepper|secret|api[_-]?key|private[_-]?key)[^"\r\n]*|(?:[a-z0-9_-]+[_-])?pin|(?:admin|waiter|mesero|cashier|cajero)Pin)'
     $safe = [regex]::Replace($safe, ('(?i)("' + $secretKey + '"\s*:\s*)(?:"(?:\\.|[^"\\])*"|[^\s,}\]\r\n]+)'), '$1"[REDACTED]"')
     $safe = [regex]::Replace($safe, '(?i)((?:--?|/)(?:password|passwd|token|secret|pin|api-key|apikey)(?:=|:|\s+))(?:"[^"\r\n]*"|''[^''\r\n]*''|[^\s]+)', '$1[REDACTED]')
     # Accept OEM/UTF-8 mojibake around the accented "o" from older consoles.
-    $safe = [regex]::Replace($safe, '(?im)(\b(?:C[^\s:]{0,16}digo\s+(?:ADMIN|MESERO)|(?:ADMIN|MESERO)\s+PIN|PIN\s+(?:ADMIN|MESERO)|Token\s+para\s+registrar\s+terminales)\s*:\s*)[^\r\n]+', '$1[REDACTED]')
+    $safe = [regex]::Replace($safe, '(?im)(\b(?:C[^\s:]{0,16}digo\s+(?:ADMIN|MESERO|CAJERO)(?:\s*\([^)]*\))?|(?:ADMIN|MESERO|CAJERO)\s+PIN|PIN\s+(?:ADMIN|MESERO|CAJERO)|Token\s+para\s+registrar\s+terminales)\s*:\s*)[^\r\n]+', '$1[REDACTED]')
     return $safe
 }
 

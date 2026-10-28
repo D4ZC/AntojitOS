@@ -1,6 +1,6 @@
 import { type FormEvent, useEffect, useState } from "react";
 import { createPortal, flushSync } from "react-dom";
-import type { ReceiptPrintingStatus, ReceiptPrintResult, ReceiptPrintStatus, SalesReceipt } from "./api/types";
+import type { ReceiptPrintingStatus, ReceiptPrintResult, ReceiptPrintStatus, SalesReceipt, Precheck } from "./api/types";
 import { formatMoney } from "./format";
 import { ReasonPresets } from "./ReasonPresets";
 import "./receipt-printing.css";
@@ -21,6 +21,55 @@ const statusLabel: Record<ReceiptPrintStatus, string> = {
 };
 const errorMessage = (error: unknown): string => error instanceof Error ? error.message : "No fue posible completar la impresión";
 
+export const BusinessHeading = () => <div className="business-heading"><strong>Antojitos Mexicanos Frank</strong><span>Carretera al Salto #6</span><span>San Jose del Castillo</span><span>Tel: 3330147392</span></div>;
+
+export const PrecheckPaper = ({ precheck }: { precheck: Precheck }) => <article className="receipt-paper">
+  <BusinessHeading />
+  <p className="receipt-precheck-title">Precuenta #{precheck.sequence}</p>
+  <div className="receipt-meta"><strong>{precheck.account.tableName || precheck.account.reference || (precheck.account.serviceType === "takeaway" ? "Para llevar" : "Venta rápida")}</strong>
+    {precheck.account.customerName && <span>Cliente: {precheck.account.customerName}</span>}
+    <span>{new Date(precheck.generatedAt).toLocaleString("es-MX", { timeZone: "America/Mexico_City" })}</span></div>
+  <div className="receipt-items">{precheck.account.items.filter((item) => item.preparationState !== "cancelled").map((item) => <div key={item.id}>
+    <span className="receipt-line-copy">{item.quantity} × {item.productName}{item.modifiers.length > 0 && <small>{item.modifiers.map((modifier) => modifier.name).join(", ")}</small>}{item.note && <small>{item.note}</small>}</span><strong>{formatMoney(item.lineTotalInCents)}</strong>
+  </div>)}</div>
+  <div className="receipt-totals">
+    {precheck.account.totals.discountInCents > 0 && <div><span>Descuento aplicado</span><span>{formatMoney(precheck.account.totals.discountInCents)}</span></div>}
+    <div><span>Subtotal sin impuestos</span><span>{formatMoney(precheck.account.totals.subtotalInCents)}</span></div>
+    <div><span>Impuestos</span><span>{formatMoney(precheck.account.totals.taxInCents)}</span></div>
+    <div className="receipt-grand-total"><strong>Total a pagar</strong><strong>{formatMoney(precheck.account.totalInCents)}</strong></div>
+  </div><p className="receipt-copy-label">CUENTA PENDIENTE DE PAGO</p>
+</article>;
+
+export const PrecheckPrintControls = ({ precheck, printPrecheck, disabled = false }: {
+  precheck: Precheck;
+  printPrecheck(id: string): Promise<{ status: string; requeued: boolean }>;
+  disabled?: boolean;
+}) => {
+  const [saving, setSaving] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [browserCopy, setBrowserCopy] = useState(false);
+  useEffect(() => {
+    const clear = () => setBrowserCopy(false);
+    window.addEventListener("afterprint", clear);
+    return () => window.removeEventListener("afterprint", clear);
+  }, []);
+  const print = async () => {
+    setSaving(true); setError(null);
+    try {
+      const result = await printPrecheck(precheck.id);
+      setNotice(result.status === "completed" ? "La precuenta ya se envió a la impresora." : "Precuenta en cola de impresión. La cuenta sigue pendiente de pago.");
+    } catch (cause) { setError(errorMessage(cause)); }
+    finally { setSaving(false); }
+  };
+  return <section className="receipt-print-controls" aria-label="Impresión de la precuenta">
+    {error && <p role="alert" className="form-error">{error}</p>}{notice && <p role="status" className="receipt-print-notice">{notice}</p>}
+    <div className="receipt-print-actions"><button type="button" disabled={disabled || saving} onClick={() => void print()}>Imprimir precuenta</button>
+      <button type="button" disabled={disabled || saving} onClick={() => { flushSync(() => setBrowserCopy(true)); window.print(); }}>Imprimir precuenta desde navegador (80 mm)</button></div>
+    {browserCopy && createPortal(<div className="receipt-browser-print" style={{ display: "none" }} aria-hidden="true"><PrecheckPaper precheck={precheck} /></div>, document.body)}
+  </section>;
+};
+
 export const ReceiptPaper = ({ receipt, titleId, browserCopy = false }: {
   receipt: SalesReceipt;
   titleId?: string;
@@ -30,6 +79,7 @@ export const ReceiptPaper = ({ receipt, titleId, browserCopy = false }: {
   const accountLabel = account.tableName || account.reference || (account.serviceType === "takeaway" ? "Para llevar" : "Venta rápida");
   return (
     <article className="receipt-paper">
+      <BusinessHeading />
       <div className="receipt-heading"><span className="brand-mark" aria-hidden="true">A</span><div><span className="eyebrow">AntojitOS · Ticket de venta</span><h2 id={titleId}>Ticket {receipt.folio}</h2></div></div>
       {browserCopy && <p className="receipt-copy-label">COPIA DESDE NAVEGADOR</p>}
       {receipt.status !== "issued" && <p className="receipt-sale-status">{receipt.status === "cancelled" ? "VENTA CANCELADA" : "VENTA DEVUELTA"}</p>}

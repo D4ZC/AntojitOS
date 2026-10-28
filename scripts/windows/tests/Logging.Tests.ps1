@@ -210,14 +210,17 @@ Describe 'Persistent Windows command diagnostics' {
         $codeLabel = 'C' + [char]0xF3 + 'digo'
         Write-AntojitLog -Message "$codeLabel ADMIN: 73918264"
         Write-AntojitLog -Message "$codeLabel MESERO: 48619372"
+        Write-AntojitLog -Message "$codeLabel CAJERO: 69812473"
+        Write-AntojitLog -Message "$codeLabel CAJERO (PILOT): 81527369"
         Write-AntojitLog -Message 'Token para registrar terminales: terminal-secret-for-fixture'
         Write-AntojitLog -Message 'DATABASE_PASSWORD=database-secret-for-fixture'
         Write-AntojitLog -Message '{"adminPin":"json-pin-for-fixture","status":"configured"}'
+        Write-AntojitLog -Message '{"cashierPin":"cashier-json-pin-for-fixture","status":"configured"}'
         Write-AntojitLog -Message 'postgres://restaurant:url-password-for-fixture@localhost/antojitos'
         Write-AntojitLog -Message 'Configuration completed.'
         foreach ($path in @($script:LoggingPhasePath, $script:LoggingSessionPath)) {
             $text = Get-Content -LiteralPath $path -Raw
-            foreach ($secret in @('73918264', '48619372', 'terminal-secret-for-fixture', 'database-secret-for-fixture', 'json-pin-for-fixture', 'url-password-for-fixture')) {
+            foreach ($secret in @('73918264', '48619372', '69812473', '81527369', 'terminal-secret-for-fixture', 'database-secret-for-fixture', 'json-pin-for-fixture', 'cashier-json-pin-for-fixture', 'url-password-for-fixture')) {
                 $text | Should -Not -Match ([regex]::Escape($secret))
             }
             $text | Should -Match '\[REDACTED\]'

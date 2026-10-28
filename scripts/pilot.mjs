@@ -3,6 +3,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomBytes, randomInt, randomUUID } from "node:crypto";
 import {
+  appendFileSync,
   closeSync,
   existsSync,
   mkdirSync,
@@ -63,6 +64,10 @@ export const validatePilotEnvironment = (environment) => {
     }
   }
 
+  if (environment.SEED_CASHIER_PIN !== undefined && !/^\d{4,8}$/u.test(environment.SEED_CASHIER_PIN)) {
+    throw new Error("SEED_CASHIER_PIN debe contener entre 4 y 8 dígitos");
+  }
+
   const port = Number(environment.PILOT_HTTP_PORT ?? "8080");
   if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
     throw new Error("PILOT_HTTP_PORT debe ser un puerto válido");
@@ -75,6 +80,10 @@ export const generatePilotEnvironment = (template) => {
   while (waiterPin === adminPin) {
     waiterPin = String(randomInt(100_000, 1_000_000));
   }
+  let cashierPin = String(randomInt(100_000, 1_000_000));
+  while (cashierPin === adminPin || cashierPin === waiterPin) {
+    cashierPin = String(randomInt(100_000, 1_000_000));
+  }
 
   const values = {
     __POSTGRES_PASSWORD__: randomBytes(24).toString("hex"),
@@ -82,6 +91,7 @@ export const generatePilotEnvironment = (template) => {
     __SESSION_PEPPER__: randomBytes(32).toString("hex"),
     __ADMIN_PIN__: adminPin,
     __WAITER_PIN__: waiterPin,
+    __CASHIER_PIN__: cashierPin,
   };
 
   let contents = template;
@@ -89,7 +99,22 @@ export const generatePilotEnvironment = (template) => {
     contents = contents.replaceAll(placeholder, value);
   }
 
-  return { contents, adminPin, waiterPin, bootstrapToken: values.__BOOTSTRAP_TOKEN__ };
+  return { contents, adminPin, waiterPin, cashierPin, bootstrapToken: values.__BOOTSTRAP_TOKEN__ };
+};
+
+export const ensurePilotCashierPin = (path) => {
+  const contents = readFileSync(path, "utf8");
+  const environment = parseEnvironmentFile(contents);
+  if (environment.SEED_CASHIER_PIN !== undefined) return environment;
+  let pin = String(randomInt(100_000, 1_000_000));
+  while ([environment.SEED_ADMIN_PIN, environment.SEED_WAITER_PIN].includes(pin)) {
+    pin = String(randomInt(100_000, 1_000_000));
+  }
+  const newline = contents.includes("\r\n") ? "\r\n" : "\n";
+  const separator = contents.length && !/[\r\n]$/u.test(contents) ? newline : "";
+  // Append to preserve the existing bytes, file permissions and Windows ACL.
+  appendFileSync(path, `${separator}SEED_CASHIER_PIN=${pin}${newline}`, { encoding: "utf8", mode: 0o600 });
+  return { ...environment, SEED_CASHIER_PIN: pin };
 };
 
 export const backupFileName = (date = new Date()) =>
@@ -103,6 +128,7 @@ const help = () => {
 
 Comandos:
   init                         Genera .env.pilot con secretos fuertes
+  configure-cashier            Agrega PIN de cajero sólo si falta en .env.pilot
   up                           Construye e inicia la pila del piloto
   start                        Inicia las imagenes existentes sin descargar ni construir
   seed                         Carga los datos iniciales del restaurante
@@ -132,6 +158,7 @@ const initialize = () => {
   console.info(`Configuración creada en ${relative(repositoryRoot, environmentFile)}`);
   console.info(`Código ADMIN: ${generated.adminPin}`);
   console.info(`Código MESERO: ${generated.waiterPin}`);
+  console.info(`Código CAJERO: ${generated.cashierPin}`);
   console.info(`Token para registrar terminales: ${generated.bootstrapToken}`);
   console.info("Guarda estos datos en un lugar seguro antes de iniciar el piloto.");
 };
@@ -140,8 +167,8 @@ const readPilotEnvironment = () => {
   if (!existsSync(environmentFile)) {
     throw new Error("Falta .env.pilot. Ejecuta primero: pnpm pilot:init");
   }
-  const environment = parseEnvironmentFile(readFileSync(environmentFile, "utf8"));
-  validatePilotEnvironment(environment);
+  validatePilotEnvironment(parseEnvironmentFile(readFileSync(environmentFile, "utf8")));
+  const environment = ensurePilotCashierPin(environmentFile);
   // The USB agent belongs to Windows, even when an older .env.pilot still
   // describes the simulator. Never revive that simulator during a daily start.
   const nativeEnvironmentFile = join(repositoryRoot, ".env.print-agent");
@@ -496,6 +523,10 @@ const main = async () => {
   }
 
   const environment = readPilotEnvironment();
+  if (command === "configure-cashier") {
+    console.info("PIN de cajero configurado en .env.pilot; se conservaron los demás secretos y los PIN existentes.");
+    return;
+  }
   const engine = detectContainerEngine();
 
   switch (command) {

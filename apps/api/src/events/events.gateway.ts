@@ -40,6 +40,12 @@ export class EventsGateway implements OnGatewayConnection {
   }
 
   publish(siteId: string, eventType: string, payload: Record<string, unknown>) {
-    this.server.to(`site:${siteId}`).emit(eventType, payload);
+    // Events invalidate local views; broadcasting financial snapshots would let a
+    // cashier reconstruct registered totals, including events queued before an upgrade.
+    const publicPayload = /^(cash\.|sale\.|sales\.)/u.test(eventType)
+      ? Object.fromEntries(Object.entries(payload).filter(([key]) =>
+        ["id", "shiftId", "closeId", "receiptId", "accountId", "folio", "status"].includes(key)))
+      : payload;
+    this.server.to(`site:${siteId}`).emit(eventType, publicPayload);
   }
 }

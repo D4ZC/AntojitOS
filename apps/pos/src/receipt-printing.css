@@ -1,3 +1,6 @@
+.business-heading { display: grid; gap: 4px; margin-bottom: 16px; text-align: center; line-height: 1.4; }
+.business-heading strong { font-size: 18px; }
+.business-heading span { font-size: 13px; }
 .receipt-line-copy { min-width: 0; overflow-wrap: anywhere; }
 .receipt-line-copy small { display: block; margin-top: 4px; font-weight: 400; }
 .receipt-items strong, .receipt-totals > div > :last-child, .receipt-payments > div > :last-child { flex-shrink: 0; white-space: nowrap; }

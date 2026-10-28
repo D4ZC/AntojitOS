@@ -1,5 +1,5 @@
 export const MAX_NOTE_LENGTH = 200;
-export const QUICK_NOTES = ["Con todo", "Sin lácteos", "Sin salsa", "Sin cebolla"] as const;
+export const QUICK_NOTES = ["Con todo", "Sin lácteos", "Sin salsa", "Sin cebolla", "Sin verdura", "Sin rábano", "Con rábano"] as const;
 
 export interface QuickNoteContext {
   name: string;
@@ -21,7 +21,7 @@ const noteParts = (note: string): string[] =>
 
 const garnishes: QuickNoteGroup = {
   label: "Verdura",
-  notes: ["Con col", "Sin col", "Con lechuga", "Sin lechuga", "Con col y lechuga", "Sin col ni lechuga", "Con cebolla", "Sin cebolla"],
+  notes: ["Sin verdura", "Con col", "Sin col", "Con lechuga", "Sin lechuga", "Con col y lechuga", "Sin col ni lechuga", "Con cebolla", "Sin cebolla", "Sin rábano", "Con rábano"],
 };
 const sauces: QuickNoteGroup = {
   label: "Salsa y picante",
@@ -39,7 +39,7 @@ export const getQuickNoteGroups = (context: QuickNoteContext): QuickNoteGroup[] 
   if (/(bebida|postre|refresco|agua fresca|cerveza|jugo|flan|horchata|jamaica)/.test(`${product} ${category}`)) return [];
   if (/torta/.test(product) || (/torta/.test(category) && !/taco/.test(product))) {
     return [
-      { label: "Verdura", notes: ["Sin cebolla", "Con cebolla", "Sin col", "Con col"] },
+      { label: "Verdura", notes: ["Sin verdura", "Sin cebolla", "Con cebolla", "Sin col", "Con col", "Sin rábano", "Con rábano"] },
       { label: "Preparación", notes: ["Con salsa", "Sin salsa", "Sin frijoles", "Con frijoles", "Sin migajón", "Preparada en bolsa"] },
       { label: "Otras indicaciones", notes: ["Con todo", "Salsa aparte"] },
     ];
@@ -50,21 +50,22 @@ export const getQuickNoteGroups = (context: QuickNoteContext): QuickNoteGroup[] 
   return [{ label: "Observaciones frecuentes", notes: QUICK_NOTES }];
 };
 
-type Ingredient = "col" | "lechuga" | "cebolla" | "salsa" | "picante" | "crema" | "queso" | "frijoles";
+type Ingredient = "col" | "lechuga" | "cebolla" | "rabano" | "salsa" | "picante" | "crema" | "queso" | "frijoles";
 type Ingredients = Partial<Record<Ingredient, boolean>>;
 const ingredients: Record<string, Ingredients> = {
   "con col y lechuga": { col: true, lechuga: true },
   "sin col ni lechuga": { col: false, lechuga: false },
   "sin crema ni queso": { crema: false, queso: false },
   "sin lacteos": { crema: false, queso: false },
+  "sin verdura": { col: false, lechuga: false, cebolla: false, rabano: false },
   "con salsa y queso": { salsa: true, queso: true },
-  "solo salsa": { salsa: true, crema: false, queso: false, col: false, lechuga: false, cebolla: false },
+  "solo salsa": { salsa: true, crema: false, queso: false, col: false, lechuga: false, cebolla: false, rabano: false },
   "salsa aparte": { salsa: false },
 };
 
 const noteIngredients = (note: string): Ingredients => {
   const normalized = normalize(note);
-  const match = /^(con|sin) (col|lechuga|cebolla|salsa|picante|crema|queso|frijoles)$/.exec(normalized);
+  const match = /^(con|sin) (col|lechuga|cebolla|rabano|salsa|picante|crema|queso|frijoles)$/.exec(normalized);
   return match ? { [match[2]!]: match[1] === "con" } : ingredients[normalized] ?? {};
 };
 
